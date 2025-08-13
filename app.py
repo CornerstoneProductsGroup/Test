@@ -278,14 +278,6 @@ try:
 except Exception as e:
     st.warning(f"Could not build ZIP: {e}")
 
-# Persist copy to disk for history
-        zip_disk_path = Path(st.session_state.get('out_root', 'output')) / zip_name
-        with open(zip_disk_path, "wb") as _zf:
-            _zf.write(zip_bytes)
-    else:
-        zip_bytes = None
-        zip_name = f"{st.session_state.get('master_name', 'Batch')} - vendor_pdfs.zip"
-
     # Persist
     st.session_state["report_df"] = rep_df
     st.session_state["review_df"] = err_df
@@ -364,8 +356,8 @@ if st.session_state.get("review_df") is not None and not st.session_state["revie
                     review_df = review_df[~review_df['page'].isin(list(selections.keys()))]
 
                     # Persist early so UI shows even if later steps fail
-st.session_state['report_df'] = rep_df
-st.session_state['review_df'] = review_df
+                    st.session_state['report_df'] = rep_df
+                    st.session_state['review_df'] = review_df
 
 # Recompute counts
                     if not rep_df.empty:
@@ -391,27 +383,28 @@ st.session_state['review_df'] = review_df
                     except Exception as e:
                         st.warning(f"Could not build Print Pack: {e}")
 
-                    # Rebuild ZIP (include Print Pack)
-try:
-    zip_buf = None
-    if out_pdfs:
-        zip_buf = io.BytesIO()
-        with zipfile.ZipFile(zip_buf, 'w', zipfile.ZIP_DEFLATED) as z:
-            for vend, path in out_pdfs.items():
-                z.write(path, arcname=Path(path).name)
-            if st.session_state.get('print_pack_disk_path'):
-                z.write(st.session_state['print_pack_disk_path'], arcname=Path(st.session_state['print_pack_disk_path']).name)
-        zip_bytes = zip_buf.getvalue()
-    else:
-        zip_bytes = None
-    zip_name = f"{st.session_state.get('master_name','Batch')} - vendor_pdfs.zip"
-    if zip_bytes:
-        zip_disk_path = Path(out_root) / zip_name
-        with open(zip_disk_path, 'wb') as _zf:
-            _zf.write(zip_bytes)
-except Exception as e:
-    st.warning(f"Could not build ZIP: {e}")
+                                        # Rebuild ZIP (include Print Pack)
+                    try:
+                        zip_buf = None
+                        if out_pdfs:
+                            zip_buf = io.BytesIO()
+                            with zipfile.ZipFile(zip_buf, 'w', zipfile.ZIP_DEFLATED) as z:
+                                for vend, path in out_pdfs.items():
+                                    z.write(path, arcname=Path(path).name)
+                                if st.session_state.get('print_pack_disk_path'):
+                                    z.write(st.session_state['print_pack_disk_path'], arcname=Path(st.session_state['print_pack_disk_path']).name)
+                            zip_bytes = zip_buf.getvalue()
+                        else:
+                            zip_bytes = None
+                        zip_name = f"{st.session_state.get('master_name','Batch')} - vendor_pdfs.zip"
+                        if zip_bytes:
+                            zip_disk_path = Path(out_root) / zip_name
+                            with open(zip_disk_path, 'wb') as _zf:
+                                _zf.write(zip_bytes)
+                    except Exception as e:
+                        st.warning(f"Could not build ZIP: {e}")
 
+                    # Persist back
 # Persist back
                     st.session_state["report_df"] = rep_df
                     st.session_state["review_df"] = review_df
