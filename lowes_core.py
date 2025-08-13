@@ -7,6 +7,26 @@ from pathlib import Path
 from vendor_map import normalize_key
 from pypdf import PdfReader, PdfWriter
 
+SOS_PO_PAT = re.compile(r"PO\s*#\s*[:\-]?\s*(\d{6,})", re.I)
+SLIP_PO_PAT = re.compile(r"PO\s*Number\s*:\s*(\d{6,})", re.I)
+def _extract_po_from_text(text: str):
+    if not text:
+        return None
+    m = SOS_PO_PAT.search(text)
+    if m:
+        return m.group(1)
+    m2 = SLIP_PO_PAT.search(text)
+    if m2:
+        return m2.group(1)
+    return None
+def _is_sos_page(text: str) -> bool:
+    if not text:
+        return False
+    t = text.lower()
+    # Require 'sos' plus one of these shipping markers to avoid false positives
+    return (' sos' in t or '\nsos' in t) and ('ship unit count' in t or 'sscc' in t or 'sos for' in t)
+
+
 MODEL_TOKEN_PAT = re.compile(r"[A-Za-z0-9][A-Za-z0-9\-/_\.]{1,29}")
 
 @dataclass
@@ -190,18 +210,72 @@ def choose_best_vendor(cands: List[Candidate], vendor_map: Dict[str,str], thresh
         return None, best, best_score, 'LOW_CONFIDENCE'
 
 
+
+def _page_text(page):
+    try:
+        t = page.extract_text() or ""
+        return t
+    except Exception:
+        return ""
+
+_PO_PACK_PAT = re.compile(r"PO\s*Number\s*:\s*(\d{6,})", re.IGNORECASE)
+_PO_SOS_PAT = re.compile(r"PO\s*#\s*[:\-]?\s*(\d{6,})", re.IGNORECASE)
+
+def _extract_po_packing(page) -> Optional[str]:
+    txt = _page_text(page)
+    m = _PO_PACK_PAT.search(txt)
+    if m:
+        return m.group(1)
+    return None
+
+def _extract_po_sos(page) -> Optional[str]:
+    txt = _page_text(page)
+    # quick SOS page check
+    if "SOS" not in txt.upper():
+        return None
+    m = _PO_SOS_PAT.search(txt)
+    if m:
+        return m.group(1)
+    return None
+
+def _is_sos_page(page) -> bool:
+    txt = _page_text(page).upper()
+    return (" SOS" in txt or "SOS " in txt) and ("PO #" in txt or "PO#".upper() in txt)
+
+
 def split_pdf_to_vendors(pdf_path: str, out_dir: str, vendor_map: Dict[str,str], threshold=0.88):
     os.makedirs(out_dir, exist_ok=True)
     report_rows = []
     review_rows = []
-    page_exports = {}
+    page_exports = {}  # temp export list if we want to do adjacency (not needed post-pass)
 
     rdr = PdfReader(pdf_path)
 
+    # First pass: collect candidates, vendor by PO, and SOS pages by PO
+    vendor_by_po: Dict[str, str] = {}
+    pack_pages_by_po: Dict[str, list] = {}
+    sos_pages_by_po: Dict[str, list] = {}
+    page_meta: Dict[int, dict] = {}
+
     with pdfplumber.open(pdf_path) as pdf:
         for i, page in enumerate(pdf.pages):
-            cands = extract_candidates_from_page(page)
+            # Detect SOS vs packing
+            po_sos = _extract_po_sos(page)
+            if po_sos:
+                sos_pages_by_po.setdefault(po_sos, []).append(i)
+                page_meta[i] = {'type': 'SOS', 'po': po_sos}
+                # We'll add to report later
+                continue
+
+            # Packing page: extract model from band and PO Number
+            words = page.extract_words(extra_attrs=['size']) or []
+            c = _extract_model_below(words)
+            cands = [c] if c else []
             vendor, best, score, flag = choose_best_vendor(cands, vendor_map, threshold=threshold)
+
+            po = _extract_po_packing(page)
+            page_meta[i] = {'type': 'PACK', 'po': po}
+
             report_rows.append({
                 'page': i+1,
                 'vendor': vendor or '',
@@ -212,7 +286,9 @@ def split_pdf_to_vendors(pdf_path: str, out_dir: str, vendor_map: Dict[str,str],
                 'flag': flag or ''
             })
             if vendor and not flag:
-                page_exports.setdefault(vendor, []).append(i)
+                pack_pages_by_po.setdefault(po or f'PAGE{i}', []).append(i)
+                if po:
+                    vendor_by_po[po] = vendor
             else:
                 review_rows.append({
                     'page': i+1,
@@ -222,17 +298,103 @@ def split_pdf_to_vendors(pdf_path: str, out_dir: str, vendor_map: Dict[str,str],
                     'anchor': best.anchor_text if best else '',
                 })
 
-    out_pdfs = {}
+    # Second pass: attach SOS pages by PO to vendor files
+    out_pdfs: Dict[str, str] = {}
     master_name = os.environ.get('HD_MASTER_NAME', 'Batch')
-    for vendor, pages in page_exports.items():
+
+    # Merge pack + SOS per PO
+    handled_sos_pages = set()
+    for po, pack_pages in pack_pages_by_po.items():
+        vend = None
+        if po and po in vendor_by_po:
+            vend = vendor_by_po[po]
+        elif isinstance(po, str) and po.startswith('PAGE'):
+            # packing page without PO (rare): vendor already chosen
+            if report_rows:
+                # Find the row for this page to get vendor
+                pg = int(po[4:])
+                for r in report_rows:
+                    if r['page'] == pg+1 and r.get('vendor'):
+                        vend = r['vendor']
+                        break
+        if not vend:
+            continue
+        # pages to export: packing + any sos for this PO
+        pages = list(pack_pages)
+        if po and po in sos_pages_by_po:
+            pages.extend(sos_pages_by_po[po])
+            handled_sos_pages.update(sos_pages_by_po[po])
+        pages = sorted(set(pages))
+        if not pages:
+            continue
         w = PdfWriter()
         for p in pages:
             w.add_page(rdr.pages[p])
-        vend_dir = Path(out_dir)/vendor
+        vend_dir = Path(out_dir)/vend
         vend_dir.mkdir(parents=True, exist_ok=True)
-        out_path = vend_dir / f"{master_name} {vendor}.pdf"
+        out_path = vend_dir / f"{master_name} {vend}.pdf"
         with open(out_path, 'wb') as f:
             w.write(f)
-        out_pdfs[vendor] = str(out_path)
+        out_pdfs[vend] = str(out_path)
+
+    # Any remaining SOS pages (with PO but missing packing/vendor) -> send to review
+    for po, sos_pages in sos_pages_by_po.items():
+        if any(p in handled_sos_pages for p in sos_pages):
+            continue
+        # if we can infer vendor by po from earlier, route; else review
+        vend = vendor_by_po.get(po)
+        if vend:
+            pages = sorted(set(sos_pages))
+            w = PdfWriter()
+            for p in pages:
+                w.add_page(rdr.pages[p])
+            vend_dir = Path(out_dir)/vend
+            vend_dir.mkdir(parents=True, exist_ok=True)
+            out_path = vend_dir / f"{master_name} {vend}.pdf"
+            # append to existing file if exists
+            if vend in out_pdfs and Path(out_pdfs[vend]).exists():
+                from pypdf import PdfReader as _R, PdfWriter as _W
+                _r_old = _R(out_pdfs[vend])
+                _w = _W()
+                for pg in _r_old.pages:
+                    _w.add_page(pg)
+                for p in pages:
+                    _w.add_page(rdr.pages[p])
+                with open(out_pdfs[vend], 'wb') as f:
+                    _w.write(f)
+            else:
+                with open(out_path, 'wb') as f:
+                    w.write(f)
+                out_pdfs[vend] = str(out_path)
+        else:
+            # add each SOS page to review with reason
+            for p in sos_pages:
+                review_rows.append({
+                    'page': p+1,
+                    'score': 0.0,
+                    'best_value': '',
+                    'best_kind': '',
+                    'anchor': 'SOS',
+                    'flag': 'SOS_UNMATCHED_PO'
+                })
+
+    # Report rows for SOS pages (optional): add info rows for transparency
+    for po, sos_pages in sos_pages_by_po.items():
+        for p in sos_pages:
+            report_rows.append({
+                'page': p+1,
+                'vendor': vendor_by_po.get(po, ''),
+                'score': 1.0 if po in vendor_by_po else 0.0,
+                'best_value': f"PO#{po}",
+                'best_kind': 'SOS',
+                'anchor': 'PO #',
+                'flag': '' if po in vendor_by_po else 'SOS_UNMATCHED_PO'
+            })
+
+    # Sort report by page for readability
+    try:
+        report_rows.sort(key=lambda r: int(r['page']))
+    except Exception:
+        pass
 
     return report_rows, review_rows, out_pdfs
