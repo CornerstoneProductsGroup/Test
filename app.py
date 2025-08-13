@@ -7,6 +7,42 @@ import io, os, zipfile
 from vendor_map import load_vendor_map, normalize_key
 import split_core  # local module
 
+def _build_pdfs_from_report(rep_df: pd.DataFrame, pdf_path: str, out_root: str, master_name: str, include_low_conf: bool):
+    """Create per-vendor PDFs from the run report, optionally including low-confidence pages.
+    Returns dict[vendor] = output_pdf_path"""
+    from pypdf import PdfReader, PdfWriter
+    rdr = PdfReader(pdf_path)
+    vpages = {}
+    for _, r in rep_df.iterrows():
+        vendor = (r.get("vendor") or "").strip()
+        if not vendor:
+            continue
+        flag = (r.get("flag") or "").strip()
+        if flag and not include_low_conf:
+            # Skip low-confidence if not included
+            continue
+        page_no = int(r.get("page") or 0)
+        if page_no <= 0 or page_no > len(rdr.pages):
+            continue
+        vpages.setdefault(vendor, []).append(page_no - 1)
+
+    out_pdfs = {}
+    from pathlib import Path as _Path
+    for v, pages in vpages.items():
+        if not pages:
+            continue
+        pages = sorted(set(pages))
+        w = PdfWriter()
+        for pi in pages:
+            w.add_page(rdr.pages[pi])
+        vend_dir = _Path(out_root) / v
+        vend_dir.mkdir(parents=True, exist_ok=True)
+        out_path = vend_dir / f"{master_name} {v}.pdf"
+        with open(out_path, "wb") as f:
+            w.write(f)
+        out_pdfs[v] = str(out_path)
+    return out_pdfs
+
 st.set_page_config(page_title="Home Depot Order Splitter", layout="wide")
 st.title("Home Depot Order Splitter – Anchor-Based")
 
@@ -83,6 +119,8 @@ def _build_print_pack_alpha(out_pdfs: dict, out_root: Path, master_name: str):
 
 with st.sidebar:
     st.header("Downloads")
+    st.session_state.setdefault("include_low_conf", True)
+    st.checkbox("Include low-confidence pages in outputs", value=st.session_state["include_low_conf"], key="include_low_conf")
     # Current batch ZIP
     if st.session_state.get("zip_bytes"):
         st.download_button("Download current ZIP", st.session_state["zip_bytes"], file_name=st.session_state.get("zip_name", "vendor_pdfs.zip"), key="dl_zip_sidebar")
@@ -225,96 +263,59 @@ if run:
         import os as _os
         _os.environ['HD_MASTER_NAME'] = st.session_state.get('master_name','Batch')
         report_rows, review_rows, out_pdfs = split_core.split_pdf_to_vendors(str(pdf_path), str(out_root), vmap, threshold=threshold)
-
     # DataFrames & counts
     rep_df = pd.DataFrame(report_rows)
     err_df = pd.DataFrame(review_rows)
-    st.session_state["out_pdfs"] = out_pdfs if out_pdfs else {}
-    # Fallback: if out_pdfs is empty, rebuild from disk under out_root
-    if not st.session_state['out_pdfs']:
-        scan_root = Path(st.session_state.get('out_root','output'))
-        disk_map = {}
-        try:
-            for vend_dir in sorted([p for p in scan_root.glob('*') if p.is_dir()]):
-                vend = vend_dir.name
-                pdfs = sorted(vend_dir.glob('*.pdf'))
-                if pdfs:
-                    disk_map[vend] = str(pdfs[0])
-        except Exception as _e:
-            pass
-        if disk_map:
-            st.session_state['out_pdfs'] = disk_map
-
-    # Fallback: if out_pdfs is empty, rebuild from disk under out_root
-    if not st.session_state['out_pdfs']:
-        scan_root = Path(st.session_state.get('out_root','output'))
-        disk_map = {}
-        try:
-            for vend_dir in sorted([p for p in scan_root.glob('*') if p.is_dir()]):
-                vend = vend_dir.name
-                pdfs = sorted(vend_dir.glob('*.pdf'))
-                if pdfs:
-                    disk_map[vend] = str(pdfs[0])
-        except Exception as _e:
-            pass
-        if disk_map:
-            st.session_state['out_pdfs'] = disk_map
-
+    # Out PDFs from split_core
+    st.session_state['out_pdfs'] = out_pdfs if out_pdfs else {}
+    # Counts per vendor
     if not rep_df.empty:
-        vc = rep_df["vendor"].fillna("").replace("", pd.NA).dropna().value_counts()
+        vc = rep_df['vendor'].fillna('').replace('', pd.NA).dropna().value_counts()
     else:
         vc = pd.Series(dtype=int)
-
     # Persist early so UI shows even if later steps fail
-st.session_state['report_df'] = rep_df
-st.session_state['review_df'] = err_df
-st.session_state['vendor_counts'] = vc
-
-# Build Print Pack (initial)
-try:
-    pp_path, included = _build_print_pack_alpha(st.session_state["out_pdfs"], out_root, st.session_state.get('master_name','Batch'))
-    if pp_path:
-        with open(pp_path, 'rb') as f:
-            st.session_state['print_pack_bytes'] = f.read()
-        st.session_state['print_pack_name'] = Path(pp_path).name
-        st.session_state['print_pack_disk_path'] = pp_path
-        st.session_state['print_pack_included'] = included
-    else:
-        st.session_state['print_pack_bytes'] = None
-        st.session_state['print_pack_name'] = None
-        st.session_state['print_pack_disk_path'] = None
-        st.session_state['print_pack_included'] = []
-except Exception as e:
-    st.warning(f"Could not build Print Pack: {e}")
-
+    st.session_state['report_df'] = rep_df
+    st.session_state['review_df'] = err_df
+    st.session_state['vendor_counts'] = vc
+    # Build Print Pack (alphabetical)
+    try:
+        pp_path, included = _build_print_pack_alpha(st.session_state['out_pdfs'], Path(st.session_state.get('out_root','output')), st.session_state.get('master_name','Batch'))
+        if pp_path:
+            with open(pp_path, 'rb') as f:
+                st.session_state['print_pack_bytes'] = f.read()
+            st.session_state['print_pack_name'] = Path(pp_path).name
+            st.session_state['print_pack_disk_path'] = pp_path
+            st.session_state['print_pack_included'] = included
+        else:
+            st.session_state['print_pack_bytes'] = None
+            st.session_state['print_pack_name'] = None
+            st.session_state['print_pack_disk_path'] = None
+            st.session_state['print_pack_included'] = []
+    except Exception as e:
+        st.warning(f"Could not build Print Pack: {e}")
     # Build ZIP (include Print Pack)
-try:
-    zip_buf = None
-    if st.session_state['out_pdfs']:
-        zip_buf = io.BytesIO()
-        with zipfile.ZipFile(zip_buf, 'w', zipfile.ZIP_DEFLATED) as z:
-            for vend, path in st.session_state['out_pdfs'].items():
-                z.write(path, arcname=f"{Path(path).name}")
-            if st.session_state.get('print_pack_disk_path'):
-                z.write(st.session_state['print_pack_disk_path'], arcname=Path(st.session_state['print_pack_disk_path']).name)
-        zip_bytes = zip_buf.getvalue()
-    else:
-        zip_bytes = None
-    zip_name = f"{st.session_state.get('master_name', 'Batch')} - vendor_pdfs.zip"
-    # Persist copy to disk for history if we have bytes
-    if zip_bytes:
-        zip_disk_path = Path(st.session_state.get('out_root','output')) / zip_name
-        with open(zip_disk_path, 'wb') as _zf:
-            _zf.write(zip_bytes)
-except Exception as e:
-    st.warning(f"Could not build ZIP: {e}")
-
-# Persist
-st.session_state["report_df"] = rep_df
-    st.session_state["review_df"] = err_df
-    st.session_state["vendor_counts"] = vc
-    st.session_state["zip_bytes"] = zip_bytes
-    st.session_state["zip_name"] = zip_namep_namep_name
+    try:
+        zip_buf = None
+        if st.session_state['out_pdfs']:
+            zip_buf = io.BytesIO()
+            with zipfile.ZipFile(zip_buf, 'w', zipfile.ZIP_DEFLATED) as z:
+                for vend, path in st.session_state['out_pdfs'].items():
+                    z.write(path, arcname=f"{Path(path).name}")
+                if st.session_state.get('print_pack_disk_path'):
+                    z.write(st.session_state['print_pack_disk_path'], arcname=Path(st.session_state['print_pack_disk_path']).name)
+            zip_bytes = zip_buf.getvalue()
+        else:
+            zip_bytes = None
+        zip_name = f"{st.session_state.get('master_name', 'Batch')} - vendor_pdfs.zip"
+        if zip_bytes:
+            zip_disk_path = Path(st.session_state.get('out_root','output')) / zip_name
+            with open(zip_disk_path, 'wb') as _zf:
+                _zf.write(zip_bytes)
+    except Exception as e:
+        st.warning(f"Could not build ZIP: {e}")
+    # Persist ZIP
+    st.session_state['zip_bytes'] = zip_bytes
+    st.session_state['zip_name'] = zip_name
 
 # Always show persisted outputs
 _persist_and_show_outputs()
@@ -345,135 +346,99 @@ if st.session_state.get("review_df") is not None and not st.session_state["revie
 
         apply = st.button("Apply selections and update vendor files", type="primary", key="apply_sel_btn")
         if apply:
-            try:
-                from pypdf import PdfReader, PdfWriter
-                src_pdf = st.session_state.get("pdf_path")
-                out_root = st.session_state.get("out_root")
-                if not src_pdf or not out_root:
-                    st.error("Missing source PDF path or output directory in session.")
-                else:
-                    rdr = PdfReader(src_pdf)
-                    # Combined assignments: previous auto + new overrides
-                    combined = dict(st.session_state.get("auto_assign", {}))
-                    combined.update({p: v for p, v in selections.items() if v})
-
-                    # Rebuild vendor PDFs
-                    vpages = {}
-                    for p, v in combined.items():
-                        vpages.setdefault(v, []).append(p-1)
-                    out_pdfs = {}
-                    for v, pages in vpages.items():
-                        pages = sorted(set([pp for pp in pages if 0 <= pp < len(rdr.pages)]))
-                        if not pages:
-                            continue
-                        w = PdfWriter()
-                        for pi in pages:
-                            w.add_page(rdr.pages[pi])
-                        vend_dir = Path(out_root)/v
-                        vend_dir.mkdir(parents=True, exist_ok=True)
-                        out_path = vend_dir / f"{st.session_state.get('master_name', 'Batch')} {v}.pdf"
-                        with open(out_path, "wb") as f:
-                            w.write(f)
-                        out_pdfs[v] = str(out_path)
-
-                    # Update session out_pdfs
-                    st.session_state["out_pdfs"] = out_pdfs if out_pdfs else {}
-    # Fallback: if out_pdfs is empty, rebuild from disk under out_root
-    if not st.session_state['out_pdfs']:
-        scan_root = Path(st.session_state.get('out_root','output'))
-        disk_map = {}
-        try:
-            for vend_dir in sorted([p for p in scan_root.glob('*') if p.is_dir()]):
-                vend = vend_dir.name
-                pdfs = sorted(vend_dir.glob('*.pdf'))
-                if pdfs:
-                    disk_map[vend] = str(pdfs[0])
-        except Exception as _e:
-            pass
-        if disk_map:
-            st.session_state['out_pdfs'] = disk_map
-
-    # Fallback: if out_pdfs is empty, rebuild from disk under out_root
-    if not st.session_state['out_pdfs']:
-        scan_root = Path(st.session_state.get('out_root','output'))
-        disk_map = {}
-        try:
-            for vend_dir in sorted([p for p in scan_root.glob('*') if p.is_dir()]):
-                vend = vend_dir.name
-                pdfs = sorted(vend_dir.glob('*.pdf'))
-                if pdfs:
-                    disk_map[vend] = str(pdfs[0])
-        except Exception as _e:
-            pass
-        if disk_map:
-            st.session_state['out_pdfs'] = disk_map
-
-
-                    # Update report/review
-                    rep_df = st.session_state["report_df"].copy()
-                    for p, v in selections.items():
-                        rep_df.loc[rep_df['page'] == p, ['vendor','flag']] = [v, '']
-                    review_df = st.session_state["review_df"].copy()
-                    review_df = review_df[~review_df['page'].isin(list(selections.keys()))]
-
-                    # Persist early so UI shows even if later steps fail
-                    st.session_state['report_df'] = rep_df
-                    st.session_state['review_df'] = review_df
-
-# Recompute counts
-                    if not rep_df.empty:
-                        vc = rep_df["vendor"].fillna("").replace("", pd.NA).dropna().value_counts()
+                try:
+                    from pypdf import PdfReader, PdfWriter
+                    src_pdf = st.session_state.get("pdf_path")
+                    out_root = st.session_state.get("out_root")
+                    if not src_pdf or not out_root:
+                        st.error("Missing source PDF path or output directory in session.")
                     else:
-                        vc = pd.Series(dtype=int)
-
-                                        # Rebuild Print Pack after review
-                    try:
-                        pp_path, included = _build_print_pack_alpha(out_pdfs, out_root, st.session_state.get('master_name','Batch'))
-                        if pp_path:
-                            with open(pp_path, 'rb') as f:
-                                print_pack_bytes = f.read()
-                            st.session_state['print_pack_bytes'] = print_pack_bytes
-                            st.session_state['print_pack_name'] = Path(pp_path).name
-                            st.session_state['print_pack_disk_path'] = pp_path
-                            st.session_state['print_pack_included'] = included
+                        rdr = PdfReader(src_pdf)
+                        # Start with pages already routed (from report_df)
+                        rep_df = st.session_state.get("report_df").copy()
+                        vpages = {}
+                        if rep_df is not None and not rep_df.empty:
+                            df_ok = rep_df[(rep_df['vendor'].astype(str)!='') & ((rep_df['flag'].astype(str)=='') | (rep_df['flag'].isna()))]
+                            for _, r in df_ok.iterrows():
+                                v = str(r['vendor'])
+                                pnum = int(r['page']) - 1
+                                vpages.setdefault(v, []).append(pnum)
+                        # Apply new selections for review pages
+                        for pnum, vend in selections.items():
+                            vpages.setdefault(vend, []).append(int(pnum)-1)
+                        # Write vendor PDFs fresh
+                        out_pdfs = {}
+                        for v, pages in vpages.items():
+                            pages = sorted(set([pp for pp in pages if 0 <= pp < len(rdr.pages)]))
+                            if not pages:
+                                continue
+                            w = PdfWriter()
+                            for pi in pages:
+                                w.add_page(rdr.pages[pi])
+                            vend_dir = Path(out_root)/v
+                            vend_dir.mkdir(parents=True, exist_ok=True)
+                            out_path = vend_dir / f"{st.session_state.get('master_name', 'Batch')} {v}.pdf"
+                            with open(out_path, "wb") as f:
+                                w.write(f)
+                            out_pdfs[v] = str(out_path)
+                        # Update session out_pdfs
+                        st.session_state["out_pdfs"] = out_pdfs if out_pdfs else {}
+                        # Update report/review tables
+                        for pnum, vend in selections.items():
+                            rep_df.loc[rep_df['page'] == pnum, ['vendor','flag']] = [vend, '']
+                        review_df = st.session_state.get("review_df").copy()
+                        review_df = review_df[~review_df['page'].isin(list(selections.keys()))]
+                        # Persist early
+                        st.session_state['report_df'] = rep_df
+                        st.session_state['review_df'] = review_df
+                        # Recompute counts
+                        if not rep_df.empty:
+                            vc = rep_df['vendor'].fillna('').replace('', pd.NA).dropna().value_counts()
                         else:
-                            st.session_state['print_pack_bytes'] = None
-                            st.session_state['print_pack_name'] = None
-                            st.session_state['print_pack_disk_path'] = None
-                            st.session_state['print_pack_included'] = []
-                    except Exception as e:
-                        st.warning(f"Could not build Print Pack: {e}")
+                            vc = pd.Series(dtype=int)
+                        st.session_state['vendor_counts'] = vc
+                        # Rebuild Print Pack (alphabetical)
+                        try:
+                            pp_path, included = _build_print_pack_alpha(out_pdfs, out_root, st.session_state.get('master_name','Batch'))
+                            if pp_path:
+                                with open(pp_path, 'rb') as f:
+                                    st.session_state['print_pack_bytes'] = f.read()
+                                st.session_state['print_pack_name'] = Path(pp_path).name
+                                st.session_state['print_pack_disk_path'] = pp_path
+                                st.session_state['print_pack_included'] = included
+                            else:
+                                st.session_state['print_pack_bytes'] = None
+                                st.session_state['print_pack_name'] = None
+                                st.session_state['print_pack_disk_path'] = None
+                                st.session_state['print_pack_included'] = []
+                        except Exception as e:
+                            st.warning(f"Could not build Print Pack: {e}")
+                        # Rebuild ZIP (include Print Pack)
+                        try:
+                            zip_buf = None
+                            if out_pdfs:
+                                zip_buf = io.BytesIO()
+                                with zipfile.ZipFile(zip_buf, 'w', zipfile.ZIP_DEFLATED) as z:
+                                    for vend, path in out_pdfs.items():
+                                        z.write(path, arcname=Path(path).name)
+                                    if st.session_state.get('print_pack_disk_path'):
+                                        z.write(st.session_state['print_pack_disk_path'], arcname=Path(st.session_state['print_pack_disk_path']).name)
+                                zip_bytes = zip_buf.getvalue()
+                            else:
+                                zip_bytes = None
+                            zip_name = f"{st.session_state.get('master_name','Batch')} - vendor_pdfs.zip"
+                            if zip_bytes:
+                                zip_disk_path = Path(out_root) / zip_name
+                                with open(zip_disk_path, 'wb') as _zf:
+                                    _zf.write(zip_bytes)
+                        except Exception as e:
+                            st.warning(f"Could not build ZIP: {e}")
+                        # Persist zip
+                        st.session_state['zip_bytes'] = zip_bytes
+                        st.session_state['zip_name'] = zip_name
+                        st.success("Selections applied. Vendor PDFs and Print Pack updated.")
+                except Exception as e:
+                    st.error(f"Failed to apply selections: {e}")
 
-                                        # Rebuild ZIP (include Print Pack)
-                    try:
-                        zip_buf = None
-                        if out_pdfs:
-                            zip_buf = io.BytesIO()
-                            with zipfile.ZipFile(zip_buf, 'w', zipfile.ZIP_DEFLATED) as z:
-                                for vend, path in out_pdfs.items():
-                                    z.write(path, arcname=Path(path).name)
-                                if st.session_state.get('print_pack_disk_path'):
-                                    z.write(st.session_state['print_pack_disk_path'], arcname=Path(st.session_state['print_pack_disk_path']).name)
-                            zip_bytes = zip_buf.getvalue()
-                        else:
-                            zip_bytes = None
-                        zip_name = f"{st.session_state.get('master_name','Batch')} - vendor_pdfs.zip"
-                        if zip_bytes:
-                            zip_disk_path = Path(out_root) / zip_name
-                            with open(zip_disk_path, 'wb') as _zf:
-                                _zf.write(zip_bytes)
-                    except Exception as e:
-                        st.warning(f"Could not build ZIP: {e}")
-
-                    # Persist back
-# Persist back
-                    st.session_state["report_df"] = rep_df
-                    st.session_state["review_df"] = review_df
-                    st.session_state["vendor_counts"] = vc
-                    st.session_state["zip_bytes"] = zip_bytes
-                    st.session_state["zip_name"] = zip_namep_namep_name
-                    st.success("Selections applied. Vendor PDFs and Print Pack updated.")
-            except Exception as e:
-                st.error(f"Failed to apply selections: {e}")
 else:
     st.caption("No uncertain pages to review.")
