@@ -263,7 +263,7 @@ except Exception as e:
         zip_bytes = zip_buf.getvalue()
         zip_name = f"{st.session_state.get('master_name', 'Batch')} - vendor_pdfs.zip"
         # Persist copy to disk for history
-        zip_disk_path = out_root / zip_name
+        zip_disk_path = Path(st.session_state.get('out_root', 'output')) / zip_name
         with open(zip_disk_path, "wb") as _zf:
             _zf.write(zip_bytes)
     else:
