@@ -1,11 +1,11 @@
-# Home Depot Order Splitter (Anchor-Based)
+# Retail Order Splitter (HD + Lowe's)
 
-- Extracts **Model** directly under the **'Model Number'** label (Home Depot slips)
-- Matches to a built-in or uploaded **.xlsx** Vendor Map
-- Auto-splits pages into per-vendor PDFs
-- **Print Pack**: combines selected vendors into one PDF for one-tap printing
-- **Review & Fix**: dropdowns to resolve low-confidence pages
-- Sidebar keeps **current ZIP**, **Print Pack**, and **previous batches**
+- **Home Depot**: extracts the value directly under the **'Model Number'** label
+- **Lowe's**: extracts the value directly under the **'Model #'** (or **'Model Number'**) label
+- Match with a **vendor map (.xlsx)** to route pages into per-vendor PDFs
+- **Print Pack**: combine selected vendors in strict, alphabetical order (exact list)
+- **Review & Fix** UI to resolve uncertain pages
+- Sidebar: per-retailer downloads + default map managers
 
 ## Run
 ```bash

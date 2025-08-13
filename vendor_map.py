@@ -3,8 +3,7 @@ from pathlib import Path
 import re
 
 def normalize_key(s: str) -> str:
-    # Uppercase, remove spaces, keep -_/.
-    s = str(s).strip().upper().replace(" ", "")
+    s = str(s or "").strip().upper().replace(" ", "")
     s = re.sub(r"[^A-Z0-9\-_/\.]+", "", s)
     return s
 
@@ -22,10 +21,9 @@ def load_vendor_map(xlsx_path: str):
         if candidate in cols:
             keys.append(cols[candidate])
     if not keys:
-        # try a few alternates
         for c in df.columns:
             lc = c.lower().strip()
-            if lc in ("model #","model number","store sku #","store sku","internet #","internet number"):
+            if lc in ("model #","model number","store sku #","store sku","internet #","internet number","item #","item number"):
                 keys.append(c)
         if not keys:
             raise ValueError("Provide at least one key column: model or sku.")

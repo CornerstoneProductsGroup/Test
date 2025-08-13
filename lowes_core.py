@@ -6,7 +6,7 @@ from pathlib import Path
 from vendor_map import normalize_key
 from pypdf import PdfReader, PdfWriter
 
-_MODEL_EXACT_PAT = re.compile(r"[A-Za-z0-9][A-Za-z0-9\-/_\.]{1,29}")
+MODEL_TOKEN_PAT = re.compile(r"[A-Za-z0-9][A-Za-z0-9\-/_\.]{1,29}")
 
 @dataclass
 class Candidate:
@@ -16,30 +16,34 @@ class Candidate:
     anchor_dist: float
     bbox: Tuple[float, float, float, float]
 
-def _find_model_label_band(words, x_pad=12, below_px=140):
-    model_idxs = [i for i,w in enumerate(words) if (w.get('text','') or '').strip().lower() == 'model']
-    for i in model_idxs:
-        w1 = words[i]
-        y_mid = (w1['top'] + w1['bottom']) / 2.0
-        near = [w2 for w2 in words
-                if abs(((w2.get('top',0)+w2.get('bottom',0))/2.0) - y_mid) <= 4.0
-                and (w2.get('text','') or '').strip().lower() == 'number'
-                and w2.get('x0',0) >= w1.get('x1',0) - 2
-                and (w2.get('x0',0) - w1.get('x1',0)) <= 60]
-        if near:
-            w2 = min(near, key=lambda w: w.get('x0',0.0))
-            x0 = min(w1['x0'], w2['x0']) - x_pad
-            x1 = max(w1['x1'], w2['x1']) + x_pad
-            anchor_bottom = max(w1['bottom'], w2['bottom'])
-            band_y1 = anchor_bottom + below_px
-            return (x0, x1, anchor_bottom, band_y1)
+def _find_band(words, x_pad=14, below_px=150):
+    # Find "Model #" or "Model Number" on a single baseline and return a narrow vertical band below it.
+    lower = [(i, (w.get('text','') or '').strip().lower(), w) for i, w in enumerate(words)]
+    for i, txt, w0 in lower:
+        if txt == "model":
+            # look for "#" or "number" to the right on same baseline
+            baseline = (w0.get('top',0)+w0.get('bottom',0))/2.0
+            candidates = [("#", "Model #"), ("number", "Model Number")]
+            for needle, label in candidates:
+                nxt = None
+                for _, t2, w2 in lower:
+                    if abs(((w2.get('top',0)+w2.get('bottom',0))/2.0) - baseline) <= 4.0 and w2.get('x0',0) >= w0.get('x1',0) - 2 and (w2.get('x0',0)-w0.get('x1',0)) <= 120:
+                        if t2 == needle:
+                            nxt = w2
+                            break
+                if nxt is not None:
+                    x0 = min(w0.get('x0',0), nxt.get('x0',0)) - x_pad
+                    x1 = max(w0.get('x1',0), nxt.get('x1',0)) + x_pad
+                    anchor_bottom = max(w0.get('bottom',0), nxt.get('bottom',0))
+                    band_y1 = anchor_bottom + below_px
+                    return (x0, x1, anchor_bottom, band_y1, label)
     return None
 
 def _extract_model_below(words) -> Optional[Candidate]:
-    band = _find_model_label_band(words)
+    band = _find_band(words)
     if not band:
         return None
-    bx0, bx1, ay, by = band
+    bx0, bx1, ay, by, label = band
     below = [w for w in words if ay - 0.5 <= w.get('top',0) <= by and bx0 <= w.get('x0',0) and w.get('x1',0) <= bx1]
     below.sort(key=lambda w: (w.get('top',0.0), w.get('x0',0.0)))
     for w in below:
@@ -47,14 +51,19 @@ def _extract_model_below(words) -> Optional[Candidate]:
         if not txt:
             continue
         low = txt.lower()
-        if low in ('model','number','model number'):
+        if low in ('model', '#', 'number', 'model #', 'model number'):
             continue
-        m = _MODEL_EXACT_PAT.fullmatch(txt) or _MODEL_EXACT_PAT.search(txt)
+        m = MODEL_TOKEN_PAT.fullmatch(txt) or MODEL_TOKEN_PAT.search(txt)
         if m:
             val = m.group(0)
-            return Candidate(value=val, kind='model', anchor_text='Model Number', anchor_dist=0.0,
+            return Candidate(value=val, kind='model', anchor_text=label, anchor_dist=0.0,
                              bbox=(w.get('x0',0.0), w.get('top',0.0), w.get('x1',0.0), w.get('bottom',0.0)))
     return None
+
+def extract_candidates_from_page(page) -> List[Candidate]:
+    words = page.extract_words(extra_attrs=['size']) or []
+    c = _extract_model_below(words)
+    return [c] if c else []
 
 def score_candidate(val: str, vendor_map: Dict[str,str], idx_keys) -> float:
     pattern_score = 0.9
@@ -102,9 +111,7 @@ def split_pdf_to_vendors(pdf_path: str, out_dir: str, vendor_map: Dict[str,str],
 
     with pdfplumber.open(pdf_path) as pdf:
         for i, page in enumerate(pdf.pages):
-            words = page.extract_words(extra_attrs=['size']) or []
-            c = _extract_model_below(words)
-            cands = [c] if c else []
+            cands = extract_candidates_from_page(page)
             vendor, best, score, flag = choose_best_vendor(cands, vendor_map, threshold=threshold)
             report_rows.append({
                 'page': i+1,
