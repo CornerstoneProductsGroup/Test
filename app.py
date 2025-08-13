@@ -7,6 +7,7 @@ import io, os, zipfile
 from vendor_map import load_vendor_map, normalize_key
 import split_core  # HD
 import lowes_core  # Lowe's
+import tsc_core  # Tractor Supply
 
 st.set_page_config(page_title="Retail Order Splitter", layout="wide")
 st.title("Retail Order Splitter – Anchor-Based (HD & Lowe's)")
@@ -16,6 +17,9 @@ def _default_map_for(state_prefix: str) -> Path:
     if state_prefix == "hd":
         fname = "vendor_map_hd.xlsx"
     elif state_prefix == "lw":
+        fname = "vendor_map_lowes.xlsx"
+    elif state_prefix == "tsc":
+        fname = "vendor_map_tsc.xlsx"
         fname = "vendor_map_lowes.xlsx"
     return Path("data")/fname
 
@@ -100,6 +104,32 @@ with st.sidebar:
                 _out.write(new_map_lw.getvalue())
             st.success("Lowe's default vendor map updated.")
 
+st.markdown("---")
+# Tractor Supply map
+st.subheader("Tractor Supply Map")
+def_path_tsc = Path("data")/"vendor_map_tsc.xlsx"
+if def_path_tsc.exists():
+    st.caption(f"Default (TSC): **{def_path_tsc.name}**")
+    try:
+        from datetime import datetime as _dt
+        st.caption("Last updated: " + _dt.fromtimestamp(def_path_tsc.stat().st_mtime).strftime("%Y-%m-%d %H:%M:%S"))
+    except Exception: pass
+    try:
+        with open(def_path_tsc, "rb") as _f:
+            st.download_button("Download TSC default map", _f.read(), file_name=def_path_tsc.name, key="dl_default_map_tsc")
+    except Exception:
+        st.caption("TSC default map not readable.")
+else:
+    st.caption("No TSC default map yet.")
+new_map_tsc = st.file_uploader("Upload new TSC vendor map (.xlsx)", type=["xlsx"], key="upl_new_map_tsc")
+if new_map_tsc is not None:
+    if st.button("Set as TSC default", key="btn_set_default_tsc"):
+        def_path_tsc.parent.mkdir(parents=True, exist_ok=True)
+        with open(def_path_tsc, "wb") as _out:
+            _out.write(new_map_tsc.getvalue())
+        st.success("Tractor Supply default vendor map updated.")
+
+
 # ---- Sidebar: Downloads & history ----
 with st.sidebar:
     st.header("Downloads")
@@ -129,7 +159,22 @@ with st.sidebar:
                 st.caption("Included (Lowe's): " + ", ".join(sorted(set(inc2))))
         else:
             st.caption("Print Pack will appear here after Lowe's processing.")
-    # History
+    
+# Tractor Supply
+with st.expander("Tractor Supply", expanded=False):
+    if st.session_state.get("tsc_zip_bytes"):
+        st.download_button("Download current ZIP (TSC)", st.session_state["tsc_zip_bytes"], file_name=st.session_state.get("tsc_zip_name","vendor_pdfs.zip"), key="dl_zip_sidebar_tsc")
+    else:
+        st.caption("Run a Tractor Supply batch to enable ZIP.")
+    if st.session_state.get("tsc_print_pack_bytes"):
+        st.download_button("Download print pack (TSC)", st.session_state["tsc_print_pack_bytes"], file_name=st.session_state.get("tsc_print_pack_name","Print Pack.pdf"), key="dl_printpack_sidebar_tsc")
+        inc3 = st.session_state.get("tsc_print_pack_included")
+        if inc3:
+            st.caption("Included (TSC): " + ", ".join(sorted(set(inc3))))
+    else:
+        st.caption("Print Pack will appear here after Tractor Supply processing.")
+
+# History
     st.markdown("---")
     st.subheader("Previous Batches")
     output_root = Path("output")
@@ -400,8 +445,10 @@ def run_retailer_panel(label: str, core_module, state_prefix: str, out_subdir: s
         st.caption("No uncertain pages to review.")
 
 # ---- Tabs ----
-tab_hd, tab_lw = st.tabs(["Home Depot", "Lowe's"])
+tab_hd, tab_lw, tab_tsc = st.tabs(["Home Depot", "Lowe's", "Tractor Supply"])
 with tab_hd:
     run_retailer_panel("Home Depot", split_core, "hd", "HD")
 with tab_lw:
     run_retailer_panel("Lowe's", lowes_core, "lw", "Lowes")
+with tab_tsc:
+    run_retailer_panel("Tractor Supply", tsc_core, "tsc", "TSC")
