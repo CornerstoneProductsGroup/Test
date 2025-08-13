@@ -11,6 +11,42 @@ import split_core  # local module
 st.set_page_config(page_title="Home Depot Order Splitter", layout="wide")
 st.title("Home Depot Order Splitter – Anchor-Based")
 
+# ---- Sidebar downloads ----
+with st.sidebar:
+    st.header("Downloads")
+
+    # Current batch ZIP
+    if st.session_state.get("zip_bytes"):
+        st.download_button(
+            "Download current ZIP",
+            st.session_state["zip_bytes"],
+            file_name=st.session_state.get("zip_name", "vendor_pdfs.zip"),
+            key="dl_zip_sidebar"
+        )
+    else:
+        st.caption("Run a batch to enable current ZIP download.")
+
+    # Previous Batches
+    st.markdown("---")
+    st.subheader("Previous Batches")
+    output_root = Path("output")
+    zip_files = sorted(output_root.rglob("*.zip"))
+    if zip_files:
+        options = [str(p) for p in zip_files]
+        labels = [p.name for p in zip_files]
+        sel_idx = st.selectbox(
+            "Select a past ZIP",
+            range(len(labels)),
+            format_func=lambda i: labels[i],
+            key="prev_zip_sel_sidebar"
+        )
+        chosen = zip_files[sel_idx]
+        with open(chosen, "rb") as f:
+            st.download_button("Download selected ZIP", f.read(), file_name=chosen.name, key="dl_prev_zip_sidebar")
+    else:
+        st.caption("No previous batches yet.")
+
+
 # ---- Session state setup ----
 for k in ["report_df", "review_df", "zip_bytes", "zip_name", "vendor_counts"]:
     if k not in st.session_state:
@@ -68,10 +104,18 @@ def _persist_and_show_outputs():
     if st.session_state["vendor_counts"] is not None:
         vc = st.session_state["vendor_counts"]
         st.subheader("Pages per Vendor")
-        if hasattr(vc, 'to_frame'):
-            st.bar_chart(vc.to_frame(name="pages"))
+        # Build a DataFrame like an Excel table
+        if hasattr(vc, "to_frame"):
+            df_counts = vc.to_frame(name="Pages").reset_index().rename(columns={"index": "Vendor"})
         else:
-            st.bar_chart(vc)
+            import pandas as _pd
+            df_counts = _pd.DataFrame({"Vendor": vc.index if hasattr(vc, "index") else [], "Pages": list(vc)})
+        # Add Total row
+        total_pages = int(df_counts["Pages"].sum()) if not df_counts.empty else 0
+        df_total = {"Vendor": "Total", "Pages": total_pages}
+        # Show table with total
+        st.dataframe(df_counts, use_container_width=True)
+        st.write("**Total pages:**", total_pages)
 
 if run:
     # Track paths in session for later corrections
@@ -264,20 +308,6 @@ else:
     st.caption("No uncertain pages to review.")
 
 
-# --- Previous Batches ---
-st.markdown("---")
-st.subheader("Previous Batches")
-output_root = Path("output")
-zip_files = sorted(output_root.rglob("*.zip"))
-if zip_files:
-    options = [str(p) for p in zip_files]
-    labels = [p.name for p in zip_files]
-    sel_idx = st.selectbox("Select a past ZIP to download", range(len(labels)), format_func=lambda i: labels[i], key="prev_zip_sel")
-    chosen = zip_files[sel_idx]
-    with open(chosen, "rb") as f:
-        st.download_button("Download selected ZIP", f.read(), file_name=chosen.name, key="dl_prev_zip")
-else:
-    st.caption("No previous batches yet. Process a PDF to create your first batch.")
 
 # Always show persisted outputs if available
 _persist_and_show_outputs()
