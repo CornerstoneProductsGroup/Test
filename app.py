@@ -84,6 +84,9 @@ with st.sidebar:
 for k in ["report_df", "review_df", "zip_bytes", "zip_name", "vendor_counts"]:
     if k not in st.session_state:
         st.session_state[k] = None
+st.session_state.setdefault("out_pdfs", {})
+    if k not in st.session_state:
+        st.session_state[k] = None
 
 with st.expander("How it works", expanded=False):
     st.markdown(
@@ -106,6 +109,9 @@ clear = col_clear.button("Clear Results", key="clear_btn")
 
 if clear:
     for k in ["report_df", "review_df", "zip_bytes", "zip_name", "vendor_counts"]:
+    if k not in st.session_state:
+        st.session_state[k] = None
+st.session_state.setdefault("out_pdfs", {})
         st.session_state[k] = None
     st.experimental_rerun()
 
@@ -191,6 +197,8 @@ if run:
     # Build DataFrames
     rep_df = pd.DataFrame(report_rows)
     err_df = pd.DataFrame(review_rows)
+    # Persist out_pdfs so other sections can safely access
+    st.session_state["out_pdfs"] = out_pdfs if out_pdfs else {}
 
     # Build initial auto assignments from the report
     auto_assign = {}
@@ -247,6 +255,8 @@ try:
 except Exception as e:
     st.warning(f"Could not build Print Pack: {e}")
 
+    # Ensure local out_pdfs reference (fallback to session)
+    out_pdfs = out_pdfs if "out_pdfs" in locals() and out_pdfs else st.session_state.get("out_pdfs", {})
     # Zip vendor outputs (and keep in session)
     zip_buf = None
     if out_pdfs:
@@ -415,6 +425,9 @@ if st.session_state.get("review_df") is not None and not st.session_state["revie
                         _zip_disk_path = _Path(out_root) / (st.session_state.get("master_name", "Batch") + " - vendor_pdfs.zip")
                         with open(_zip_disk_path, "wb") as _zf:
                             _zf.write(zip_bytes)
+
+                    # Update out_pdfs in session for downstream consumers
+                    st.session_state["out_pdfs"] = out_pdfs if out_pdfs else {}
 
                     # Persist back
                     st.session_state["report_df"] = rep_df
