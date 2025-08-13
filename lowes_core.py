@@ -66,15 +66,31 @@ def extract_candidates_from_page(page) -> List[Candidate]:
     return [c] if c else []
 
 def score_candidate(val: str, vendor_map: Dict[str,str], idx_keys) -> float:
+    """Score with map-aware cleaning:
+    - pull a letter-leading subtoken inside val (e.g., from '11UP-CLEANER-XTRA6506389')
+    - exact match on cleaned token wins
+    - otherwise try partial-ratio fuzzy against map keys
+    """
     pattern_score = 0.9
     dict_score = 0.0
-    nval = normalize_key(val)
-    if nval in vendor_map:
-        dict_score = 1.0
-    else:
-        best = process.extractOne(nval, idx_keys, scorer=fuzz.token_set_ratio)
-        if best and best[1] >= 92:
-            dict_score = 0.85
+    # Prefer a letter-leading subtoken 2..30 chars
+    subs = _re.findall(r"[A-Za-z][A-Za-z0-9\-/_\.]{1,29}", val or "")
+    # Consider raw val too, in case it's already clean
+    cands = [val] + subs
+    # Exact membership check
+    for sc in cands:
+        n = normalize_key(sc)
+        if n in vendor_map:
+            dict_score = 1.0
+            return 0.55*dict_score + 0.45*pattern_score
+    # Partial match (substring) fallback at a high bar
+    from rapidfuzz import fuzz, process
+    # Use the longest subtoken if present, else the original
+    probe = max(subs, key=len) if subs else (val or "")
+    nval = normalize_key(probe)
+    best = process.extractOne(nval, idx_keys, scorer=fuzz.partial_ratio)
+    if best and best[1] >= 95:
+        dict_score = 0.9
     return 0.55*dict_score + 0.45*pattern_score
 
 def choose_best_vendor(cands: List[Candidate], vendor_map: Dict[str,str], threshold=0.88):
