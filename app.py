@@ -206,6 +206,47 @@ if run:
     else:
         vc = pd.Series(dtype=int)
 
+
+# Build Print Pack (combined PDF for designated vendors) - initial build
+try:
+    from pypdf import PdfReader, PdfWriter
+    # Normalize targets
+    targets = set()
+    for t in PRINT_PACK_VENDORS:
+        nt = _norm_vendor(t)
+        nt = PRINT_PACK_SYNONYMS.get(nt, nt)
+        targets.add(nt)
+    pack_paths = []
+    included = []
+    for k, pth in out_pdfs.items():
+        nk = _norm_vendor(k)
+        for nt in targets:
+            if nk == nt or nk.startswith(nt) or nt.startswith(nk) or (nt in nk) or (nk in nt):
+                pack_paths.append(pth)
+                included.append(k)
+                break
+    if pack_paths:
+        writer = PdfWriter()
+        for pth in pack_paths:
+            r = PdfReader(pth)
+            for pg in r.pages:
+                writer.add_page(pg)
+        print_pack_path = out_root / f"{st.session_state.get('master_name','Batch')} - Print Pack.pdf"
+        with open(print_pack_path, "wb") as f:
+            writer.write(f)
+        with open(print_pack_path, "rb") as f:
+            st.session_state["print_pack_bytes"] = f.read()
+        st.session_state["print_pack_name"] = print_pack_path.name
+        st.session_state["print_pack_disk_path"] = str(print_pack_path)
+        st.session_state["print_pack_included"] = included
+    else:
+        st.session_state["print_pack_bytes"] = None
+        st.session_state["print_pack_name"] = None
+        st.session_state["print_pack_disk_path"] = None
+        st.session_state["print_pack_included"] = []
+except Exception as e:
+    st.warning(f"Could not build Print Pack: {e}")
+
     # Zip vendor outputs (and keep in session)
     zip_buf = None
     if out_pdfs:
