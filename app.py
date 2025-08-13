@@ -85,8 +85,6 @@ for k in ["report_df", "review_df", "zip_bytes", "zip_name", "vendor_counts"]:
     if k not in st.session_state:
         st.session_state[k] = None
 st.session_state.setdefault("out_pdfs", {})
-    if k not in st.session_state:
-        st.session_state[k] = None
 
 with st.expander("How it works", expanded=False):
     st.markdown(
