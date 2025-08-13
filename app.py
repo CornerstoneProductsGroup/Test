@@ -11,6 +11,13 @@ import split_core  # local module
 st.set_page_config(page_title="Home Depot Order Splitter", layout="wide")
 st.title("Home Depot Order Splitter – Anchor-Based")
 
+# Vendors to auto-combine for the Print Pack (one-tap printing)
+PRINT_PACK_VENDORS = [
+    "Cord Mate", "Cornerstone", "Gate Latch", "Home Selects",
+    "Nisus", "Post Protector Here", "Soft Seal", "Weedshark"
+]
+
+
 # ---- Sidebar downloads ----
 with st.sidebar:
     st.header("Downloads")
@@ -25,6 +32,17 @@ with st.sidebar:
         )
     else:
         st.caption("Run a batch to enable current ZIP download.")
+
+    # Print Pack (combined)
+    if st.session_state.get("print_pack_bytes"):
+        st.download_button(
+            "Download print pack (PDF)",
+            st.session_state["print_pack_bytes"],
+            file_name=st.session_state.get("print_pack_name", "Print Pack.pdf"),
+            key="dl_printpack_sidebar"
+        )
+    else:
+        st.caption("Print Pack will appear here after processing.")
 
     # Previous Batches
     st.markdown("---")
@@ -180,6 +198,9 @@ if run:
         with zipfile.ZipFile(zip_buf, 'w', zipfile.ZIP_DEFLATED) as z:
             for vend, path in out_pdfs.items():
                 z.write(path, arcname=f"{Path(path).name}")
+            # Add Print Pack if present
+            if st.session_state.get("print_pack_disk_path"):
+                z.write(st.session_state["print_pack_disk_path"], arcname=Path(st.session_state["print_pack_disk_path"]).name)
         zip_bytes = zip_buf.getvalue()
         zip_name = f"{st.session_state.get('master_name', 'Batch')} - vendor_pdfs.zip"
     else:
@@ -273,6 +294,37 @@ if st.session_state.get("review_df") is not None and not st.session_state["revie
                         import pandas as _pd
                         vc = _pd.Series(dtype=int)
 
+                    # Build Print Pack (combined) after review
+                    print_pack_path = None
+                    try:
+                        from pypdf import PdfReader, PdfWriter
+                        pack_paths = []
+                        for v in PRINT_PACK_VENDORS:
+                            # Match new vendor pdfs that we just wrote in out_pdfs
+                            vend_pdf = out_pdfs.get(v)
+                            if vend_pdf:
+                                pack_paths.append(vend_pdf)
+                        if pack_paths:
+                            writer = PdfWriter()
+                            for pth in pack_paths:
+                                r = PdfReader(pth)
+                                for pg in r.pages:
+                                    writer.add_page(pg)
+                            print_pack_path = _Path(out_root) / f"{st.session_state.get('master_name', 'Batch')} - Print Pack.pdf"
+                            with open(print_pack_path, "wb") as f:
+                                writer.write(f)
+                            with open(print_pack_path, "rb") as f:
+                                print_pack_bytes = f.read()
+                            st.session_state["print_pack_bytes"] = print_pack_bytes
+                            st.session_state["print_pack_name"] = print_pack_path.name
+                            st.session_state["print_pack_disk_path"] = str(print_pack_path)
+                        else:
+                            st.session_state["print_pack_bytes"] = None
+                            st.session_state["print_pack_name"] = None
+                            st.session_state["print_pack_disk_path"] = None
+                    except Exception as e:
+                        st.warning(f"Could not build Print Pack: {e}")
+
                     # Rebuild ZIP
                     import io, zipfile
                     zip_buf = None
@@ -281,6 +333,9 @@ if st.session_state.get("review_df") is not None and not st.session_state["revie
                         with zipfile.ZipFile(zip_buf, 'w', zipfile.ZIP_DEFLATED) as z:
                             for vend, path in out_pdfs.items():
                                 z.write(path, arcname=_Path(path).name)
+                            # Add Print Pack if present
+                            if st.session_state.get("print_pack_disk_path"):
+                                z.write(st.session_state["print_pack_disk_path"], arcname=_Path(st.session_state["print_pack_disk_path"]).name)
                         zip_bytes = zip_buf.getvalue()
                         zip_name = f"{st.session_state.get('master_name', 'Batch')} - vendor_pdfs.zip"
                     else:
