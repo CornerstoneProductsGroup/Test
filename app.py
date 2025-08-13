@@ -12,6 +12,17 @@ st.set_page_config(page_title="Home Depot Order Splitter", layout="wide")
 st.title("Home Depot Order Splitter – Anchor-Based")
 
 # Vendors to auto-combine for the Print Pack (one-tap printing)
+import re as _re
+def _norm_vendor(s: str) -> str:
+    s = (s or "").upper()
+    return _re.sub(r"[^A-Z0-9]", "", s)
+
+# Synonyms / cleanup (left -> normalized pattern we expect)
+PRINT_PACK_SYNONYMS = {
+    "POSTPROTECTORHERE": "POSTPROTECTOR",
+    "WEEDSHARK": "WEEDSHARK",
+}
+
 PRINT_PACK_VENDORS = [
     "Cord Mate", "Cornerstone", "Gate Latch", "Home Selects",
     "Nisus", "Post Protector Here", "Soft Seal", "Weedshark"
@@ -43,6 +54,10 @@ with st.sidebar:
         )
     else:
         st.caption("Print Pack will appear here after processing.")
+    # Show included vendors (if any)
+    inc = st.session_state.get("print_pack_included")
+    if inc:
+        st.caption("Included in Print Pack: " + ", ".join(sorted(set(inc))))
 
     # Previous Batches
     st.markdown("---")
@@ -295,35 +310,47 @@ if st.session_state.get("review_df") is not None and not st.session_state["revie
                         vc = _pd.Series(dtype=int)
 
                     # Build Print Pack (combined) after review
-                    print_pack_path = None
-                    try:
-                        from pypdf import PdfReader, PdfWriter
-                        pack_paths = []
-                        for v in PRINT_PACK_VENDORS:
-                            # Match new vendor pdfs that we just wrote in out_pdfs
-                            vend_pdf = out_pdfs.get(v)
-                            if vend_pdf:
-                                pack_paths.append(vend_pdf)
-                        if pack_paths:
-                            writer = PdfWriter()
-                            for pth in pack_paths:
-                                r = PdfReader(pth)
-                                for pg in r.pages:
-                                    writer.add_page(pg)
-                            print_pack_path = _Path(out_root) / f"{st.session_state.get('master_name', 'Batch')} - Print Pack.pdf"
-                            with open(print_pack_path, "wb") as f:
-                                writer.write(f)
-                            with open(print_pack_path, "rb") as f:
-                                print_pack_bytes = f.read()
-                            st.session_state["print_pack_bytes"] = print_pack_bytes
-                            st.session_state["print_pack_name"] = print_pack_path.name
-                            st.session_state["print_pack_disk_path"] = str(print_pack_path)
-                        else:
-                            st.session_state["print_pack_bytes"] = None
-                            st.session_state["print_pack_name"] = None
-                            st.session_state["print_pack_disk_path"] = None
-                    except Exception as e:
-                        st.warning(f"Could not build Print Pack: {e}")
+print_pack_path = None
+try:
+    from pypdf import PdfReader, PdfWriter
+    # Normalize targets
+    targets = set()
+    for t in PRINT_PACK_VENDORS:
+        nt = _norm_vendor(t)
+        nt = PRINT_PACK_SYNONYMS.get(nt, nt)
+        targets.add(nt)
+    pack_paths = []
+    included = []
+    # Match using the out_pdfs dict we just created
+    for k, pth in out_pdfs.items():
+        nk = _norm_vendor(k)
+        for nt in targets:
+            if nk == nt or nk.startswith(nt) or nt.startswith(nk) or (nt in nk) or (nk in nt):
+                pack_paths.append(pth)
+                included.append(k)
+                break
+    if pack_paths:
+        writer = PdfWriter()
+        for pth in pack_paths:
+            r = PdfReader(pth)
+            for pg in r.pages:
+                writer.add_page(pg)
+        print_pack_path = _Path(out_root) / f"{st.session_state.get('master_name', 'Batch')} - Print Pack.pdf"
+        with open(print_pack_path, "wb") as f:
+            writer.write(f)
+        with open(print_pack_path, "rb") as f:
+            print_pack_bytes = f.read()
+        st.session_state["print_pack_bytes"] = print_pack_bytes
+        st.session_state["print_pack_name"] = print_pack_path.name
+        st.session_state["print_pack_disk_path"] = str(print_pack_path)
+        st.session_state["print_pack_included"] = included
+    else:
+        st.session_state["print_pack_bytes"] = None
+        st.session_state["print_pack_name"] = None
+        st.session_state["print_pack_disk_path"] = None
+        st.session_state["print_pack_included"] = []
+except Exception as e:
+    st.warning(f"Could not build Print Pack: {e}")
 
                     # Rebuild ZIP
                     import io, zipfile
