@@ -346,23 +346,23 @@ if st.session_state.get("review_df") is not None and not st.session_state["revie
                     else:
                         vc = pd.Series(dtype=int)
 
-                    # Rebuild Print Pack after review
-try:
-    pp_path, included = _build_print_pack_alpha(out_pdfs, out_root, st.session_state.get('master_name','Batch'))
-    if pp_path:
-        with open(pp_path, 'rb') as f:
-            print_pack_bytes = f.read()
-        st.session_state['print_pack_bytes'] = print_pack_bytes
-        st.session_state['print_pack_name'] = Path(pp_path).name
-        st.session_state['print_pack_disk_path'] = pp_path
-        st.session_state['print_pack_included'] = included
-    else:
-        st.session_state['print_pack_bytes'] = None
-        st.session_state['print_pack_name'] = None
-        st.session_state['print_pack_disk_path'] = None
-        st.session_state['print_pack_included'] = []
-except Exception as e:
-    st.warning(f"Could not build Print Pack: {e}")
+                                        # Rebuild Print Pack after review
+                    try:
+                        pp_path, included = _build_print_pack_alpha(out_pdfs, out_root, st.session_state.get('master_name','Batch'))
+                        if pp_path:
+                            with open(pp_path, 'rb') as f:
+                                print_pack_bytes = f.read()
+                            st.session_state['print_pack_bytes'] = print_pack_bytes
+                            st.session_state['print_pack_name'] = Path(pp_path).name
+                            st.session_state['print_pack_disk_path'] = pp_path
+                            st.session_state['print_pack_included'] = included
+                        else:
+                            st.session_state['print_pack_bytes'] = None
+                            st.session_state['print_pack_name'] = None
+                            st.session_state['print_pack_disk_path'] = None
+                            st.session_state['print_pack_included'] = []
+                    except Exception as e:
+                        st.warning(f"Could not build Print Pack: {e}")
 
                     # Rebuild ZIP (include Print Pack)
                     zip_buf = None
