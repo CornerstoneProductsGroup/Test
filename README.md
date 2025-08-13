@@ -21,3 +21,8 @@ streamlit run app.py
 ## Notes
 - This is **Home Depot–only**. Lowe's & Tractor Supply can be added later as separate templates.
 - The app supports `.xlsx` via **openpyxl**.
+
+
+## Default Vendor Map
+- This build includes a bundled default map at `data/vendor_map.xlsx`.
+- Use the **Vendor Map** section in the sidebar to replace it. Once updated, it is used for future runs without re-uploading.
