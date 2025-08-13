@@ -1,3 +1,4 @@
+
 import streamlit as st
 import pandas as pd
 from datetime import datetime
@@ -8,23 +9,69 @@ from vendor_map import load_vendor_map, normalize_key
 import split_core  # local module
 
 st.set_page_config(page_title="Home Depot Order Splitter", layout="wide")
-
 st.title("Home Depot Order Splitter – Anchor-Based")
 
+# ---- Session state setup ----
+for k in ["report_df", "review_df", "zip_bytes", "zip_name", "vendor_counts"]:
+    if k not in st.session_state:
+        st.session_state[k] = None
 
 with st.expander("How it works", expanded=False):
-    st.markdown("""- Extracts **Model/SKU** values only **near labels** like *Model #*, *Model Number*, *Store SKU #* (Home Depot template).
-- Scores each detection against your **Vendor Map (.xlsx)** with fuzzy matching.
-- High-confidence pages are auto-routed; others land in a **Review Queue**.
-- Supports `.xlsx` mapping (via **openpyxl**).
-    """)
+    st.markdown(
+        "- Extracts **Model/SKU** values only **under the 'Model Number' label** (Home Depot template).\n"
+        "- Scores each detection against your **Vendor Map (.xlsx)** with fuzzy matching.\n"
+        "- High-confidence pages are auto-routed; others land in a **Review Queue**.\n"
+        "- Supports `.xlsx` mapping (via **openpyxl**)."
+    )
 
-pdf_file = st.file_uploader("Upload Home Depot order PDF", type=["pdf"])
-map_file = st.file_uploader("Upload SKU/Model → Vendor map (.xlsx)", type=["xlsx"])
-threshold = st.slider("Auto-route confidence threshold", 0.70, 0.99, 0.88, 0.01,
-    help="Lower this slightly if many pages are landing in review due to near-misses.")
+pdf_file = st.file_uploader("Upload Home Depot order PDF", type=["pdf"], key="pdf_upl")
+map_file = st.file_uploader("Upload SKU/Model → Vendor map (.xlsx)", type=["xlsx"], key="map_upl")
+threshold = st.slider(
+    "Auto-route confidence threshold", 0.70, 0.99, 0.88, 0.01,
+    help="Lower this slightly if many pages are landing in review due to near-misses."
+)
 
-run = st.button("Process PDF", type="primary", disabled=not (pdf_file and map_file))
+col_run, col_clear = st.columns([1,1])
+run = col_run.button("Process PDF", type="primary", disabled=not (pdf_file and map_file), key="run_btn")
+clear = col_clear.button("Clear Results", key="clear_btn")
+
+if clear:
+    for k in ["report_df", "review_df", "zip_bytes", "zip_name", "vendor_counts"]:
+        st.session_state[k] = None
+    st.experimental_rerun()
+
+def _persist_and_show_outputs():
+    # Show report
+    if st.session_state["report_df"] is not None:
+        st.subheader("Run report")
+        st.dataframe(st.session_state["report_df"], use_container_width=True)
+        rep_csv = st.session_state["report_df"].to_csv(index=False).encode()
+        st.download_button("Download split_report.csv", rep_csv, file_name="split_report.csv", key="dl_report")
+
+    # Show errors/low-confidence
+    if st.session_state["review_df"] is not None and not st.session_state["review_df"].empty:
+        st.warning(f"{len(st.session_state['review_df'])} page(s) need review (low confidence or unresolved). See below.")
+        st.dataframe(st.session_state["review_df"], use_container_width=True)
+        err_csv = st.session_state["review_df"].to_csv(index=False).encode()
+        st.download_button("Download errors_low_confidence.csv", err_csv, file_name="errors_low_confidence.csv", key="dl_errs")
+    elif st.session_state["report_df"] is not None:
+        st.success("No review needed. All pages auto-routed above threshold.")
+
+    # Download vendor PDFs
+    if st.session_state["zip_bytes"]:
+        st.download_button("Download vendor PDFs (ZIP)",
+                           st.session_state["zip_bytes"],
+                           file_name=st.session_state.get("zip_name","vendor_pdfs.zip"),
+                           key="dl_zip")
+
+    # Summary chart (vendor counts)
+    if st.session_state["vendor_counts"] is not None:
+        import matplotlib.pyplot as plt
+        vc = st.session_state["vendor_counts"]
+        st.subheader("Pages per Vendor")
+        fig = plt.figure()
+        vc.plot(kind="bar")
+        st.pyplot(fig)
 
 if run:
     out_root = Path("output")/datetime.now().strftime("%Y-%m-%d")
@@ -46,36 +93,38 @@ if run:
         st.error(f"Failed to load vendor map: {e}")
         st.stop()
 
-    # Split using core
     with st.spinner("Extracting and splitting pages..."):
         report_rows, review_rows, out_pdfs = split_core.split_pdf_to_vendors(str(pdf_path), str(out_root), vmap, threshold=threshold)
 
-    # Reports
+    # Build DataFrames
     rep_df = pd.DataFrame(report_rows)
-    st.subheader("Run report")
-    with st.expander("Debug: what did the extractor see?", expanded=False):
-        if not rep_df.empty:
-            st.write("First 10 rows shown (includes candidate values column).")
-            st.dataframe(rep_df.head(10), use_container_width=True)
-    st.dataframe(rep_df, use_container_width=True)
-    rep_csv = rep_df.to_csv(index=False).encode()
-    st.download_button("Download split_report.csv", rep_csv, file_name="split_report.csv" )
+    err_df = pd.DataFrame(review_rows)
 
-    if review_rows:
-        st.warning(f"{len(review_rows)} page(s) need review (low confidence or unresolved). See below.")
-        err_df = pd.DataFrame(review_rows)
-        st.dataframe(err_df, use_container_width=True)
-        err_csv = err_df.to_csv(index=False).encode()
-        st.download_button("Download errors_low_confidence.csv", err_csv, file_name="errors_low_confidence.csv" )
+    # Compute vendor counts
+    if not rep_df.empty:
+        vc = rep_df["vendor"].fillna("").replace("", pd.NA).dropna().value_counts()
     else:
-        st.success("No review needed. All pages auto-routed above threshold.")
+        vc = pd.Series(dtype=int)
 
-    # Zip vendor outputs
+    # Zip vendor outputs (and keep in session)
+    zip_buf = None
     if out_pdfs:
         zip_buf = io.BytesIO()
         with zipfile.ZipFile(zip_buf, 'w', zipfile.ZIP_DEFLATED) as z:
             for vend, path in out_pdfs.items():
                 z.write(path, arcname=f"{Path(path).name}")
-        st.download_button("Download vendor PDFs (ZIP)", zip_buf.getvalue(), file_name="vendor_pdfs.zip")
+        zip_bytes = zip_buf.getvalue()
+        zip_name = "vendor_pdfs.zip"
     else:
-        st.info("No vendor PDFs were generated.")
+        zip_bytes = None
+        zip_name = "vendor_pdfs.zip"
+
+    # Persist to session so downloads & chart stay after clicking
+    st.session_state["report_df"] = rep_df
+    st.session_state["review_df"] = err_df
+    st.session_state["vendor_counts"] = vc
+    st.session_state["zip_bytes"] = zip_bytes
+    st.session_state["zip_name"] = zip_name
+
+# Always show persisted outputs if available
+_persist_and_show_outputs()
