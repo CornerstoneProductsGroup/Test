@@ -17,11 +17,12 @@ class Candidate:
     anchor_dist: float
     bbox: Tuple[float, float, float, float]
 
-def _find_band(words, x_pad=14, below_px=150):
+def _find_band(words, x_pad_left=60, x_pad_right=220, below_px=180):
     # Find "Model #" or "Model Number" on a single baseline and return a narrow vertical band below it.
     lower = [(i, (w.get('text','') or '').strip().lower(), w) for i, w in enumerate(words)]
     for i, txt, w0 in lower:
-        if txt == "model":
+        # accept 'model#' or 'model #' in one token too
+        if txt in ('model', 'model#', 'model #'):
             # look for "#" or "number" to the right on same baseline
             baseline = (w0.get('top',0)+w0.get('bottom',0))/2.0
             candidates = [("#", "Model #"), ("number", "Model Number")]
@@ -33,8 +34,8 @@ def _find_band(words, x_pad=14, below_px=150):
                             nxt = w2
                             break
                 if nxt is not None:
-                    x0 = min(w0.get('x0',0), nxt.get('x0',0)) - x_pad
-                    x1 = max(w0.get('x1',0), nxt.get('x1',0)) + x_pad
+                    x0 = min(w0.get('x0',0), nxt.get('x0',0)) - x_pad_left
+            x1 = max(w0.get('x1',0), nxt.get('x1',0)) + x_pad_right
                     anchor_bottom = max(w0.get('bottom',0), nxt.get('bottom',0))
                     band_y1 = anchor_bottom + below_px
                     return (x0, x1, anchor_bottom, band_y1, label)
