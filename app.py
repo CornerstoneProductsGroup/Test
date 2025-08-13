@@ -85,7 +85,15 @@ for k in ["report_df", "review_df", "zip_bytes", "zip_name", "vendor_counts"]:
     if k not in st.session_state:
         st.session_state[k] = None
 st.session_state.setdefault("out_pdfs", {})
-
+st.session_state.setdefault("pdf_path", None)
+st.session_state.setdefault("out_root", None)
+st.session_state.setdefault("master_name", "Batch")
+st.session_state.setdefault("vendor_options", [])
+st.session_state.setdefault("auto_assign", {})
+st.session_state.setdefault("print_pack_bytes", None)
+st.session_state.setdefault("print_pack_name", None)
+st.session_state.setdefault("print_pack_disk_path", None)
+st.session_state.setdefault("print_pack_included", [])
 with st.expander("How it works", expanded=False):
     st.markdown(
         "- Extracts **Model/SKU** values only **under the 'Model Number' label** (Home Depot template).\n"
