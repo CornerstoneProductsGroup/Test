@@ -1,3 +1,4 @@
+
 from dataclasses import dataclass
 from typing import List, Dict, Tuple, Optional
 import pdfplumber, re, os
@@ -5,24 +6,9 @@ from rapidfuzz import fuzz, process
 from pathlib import Path
 from vendor_map import normalize_key
 
+# ---- Patterns ----
 MODEL_PAT = re.compile(r"[A-Z0-9][A-Z0-9\-\/\.]{1,29}", re.I)
 SKU_PAT   = re.compile(r"\b\d{5,12}\b")
-
-# Home Depot-specific anchors with (search_width, search_height) in PDF units
-ANCHORS_HD = [
-    ("Model #",        260, 100,  "model"),
-    ("Model#",         260, 100,  "model"),
-    ("Model Number",   280, 110,  "model"),
-    ("Model No.",      260, 100,  "model"),
-    ("Model No",       260, 100,  "model"),
-    ("Model",          240, 100,  "model"),
-    ("M/N",            220, 90,   "model"),
-    ("Mfr #",          240, 100,  "model"),
-    ("SKU #",          240, 100,  "sku"),
-    ("Store SKU #",    280, 110,  "sku"),
-    ("Store SKU",      280, 110,  "sku"),
-    ("SKU:",           220, 90,   "sku"),
-]
 
 @dataclass
 class Candidate:
@@ -32,42 +18,61 @@ class Candidate:
     anchor_dist: float
     bbox: Tuple[float, float, float, float]
 
-def _find_anchor_boxes(words, anchor_text: str, dx: float, dy: float):
-    boxes = []
-    at = anchor_text.lower()
-    for w in words:
-        if at in w.get("text", "").lower():
-            x0, y0, x1, y1 = w["x0"], w["top"], w["x1"], w["bottom"]
-            boxes.append((x1, y0, x1 + dx, y0 + dy, (x0, y0, x1, y1)))
-    return boxes
+# ===== Home Depot: precise "Model Number" column extraction =====
 
-def _tokens_in_box(words, box):
-    x0, y0, x1, y1 = box
-    return [w for w in words if (x0 <= w["x0"] <= x1 and y0 <= w["top"] <= y1)]
+def _find_model_label_band(words, x_pad=12, below_px=140):
+    """Find the 'Model Number' label built from tokens 'Model' + 'Number' on the same line,
+    then return a tight vertical band directly beneath that label within which the model value appears."""
+    # Find any token 'Model'
+    model_idxs = [i for i,w in enumerate(words) if (w.get('text','') or '').strip().lower() == 'model']
+    for i in model_idxs:
+        w1 = words[i]
+        y_mid = (w1['top'] + w1['bottom']) / 2.0
+        # Find 'Number' token to the right on same baseline
+        near = [w2 for w2 in words
+                if abs(((w2.get('top',0)+w2.get('bottom',0))/2.0) - y_mid) <= 4.0
+                and (w2.get('text','') or '').strip().lower() == 'number'
+                and w2.get('x0',0) >= w1.get('x1',0) - 2
+                and (w2.get('x0',0) - w1.get('x1',0)) <= 60]
+        if near:
+            w2 = min(near, key=lambda w: w.get('x0',0.0))
+            x0 = min(w1['x0'], w2['x0']) - x_pad
+            x1 = max(w1['x1'], w2['x1']) + x_pad
+            anchor_bottom = max(w1['bottom'], w2['bottom'])
+            band_y1 = anchor_bottom + below_px
+            return (x0, x1, anchor_bottom, band_y1)
+    return None
 
-def _match_candidates(tokens, kind: str):
-    pat = MODEL_PAT if kind == "model" else SKU_PAT
-    out = []
-    for t in tokens:
-        m = pat.search(t.get("text", ""))
+_MODEL_EXACT_PAT = re.compile(r"[A-Za-z0-9][A-Za-z0-9\-/_\.]{1,29}")
+
+def _extract_model_below(words) -> Optional[Candidate]:
+    band = _find_model_label_band(words)
+    if not band:
+        return None
+    bx0, bx1, ay, by = band
+    # Consider tokens within the narrow vertical band below the label
+    below = [w for w in words if w.get('top',0) >= ay - 0.5 and w.get('top',0) <= by and w.get('x0',0) >= bx0 and w.get('x1',0) <= bx1]
+    # Sort by vertical position, then x
+    below.sort(key=lambda w: (w.get('top',0.0), w.get('x0',0.0)))
+    for w in below:
+        txt = (w.get('text') or '').strip()
+        if not txt:
+            continue
+        low = txt.lower()
+        if low in ('model','number','model number'):
+            continue
+        m = _MODEL_EXACT_PAT.fullmatch(txt) or _MODEL_EXACT_PAT.search(txt)
         if m:
-            out.append((m.group(0).strip(), t))
-    return out
+            val = m.group(0)
+            return Candidate(value=val, kind='model', anchor_text='Model Number', anchor_dist=0.0,
+                             bbox=(w.get('x0',0.0), w.get('top',0.0), w.get('x1',0.0), w.get('bottom',0.0)))
+    return None
 
-def _distance(ax_box, token):
-    # distance between right edge of anchor and token left/top
-    ax0, ay0, ax1, ay1 = ax_box
-    tx, ty = token["x0"], token["top"]
-    dx = max(0.0, tx - ax1)
-    dy = max(0.0, ty - ay0)
-    return (dx**2 + dy**2) ** 0.5
+# ===== Candidate scoring & vendor resolution =====
 
 def score_candidate(val: str, anchor_dist: float, kind: str, vendor_map: Dict[str,str], idx_keys) -> float:
-    # pattern score by kind
-    pattern_score = 0.9 if kind == "model" else 0.85
-    # distance score (closer is better)
+    pattern_score = 0.9 if kind == 'model' else 0.85
     dist_score = max(0.0, min(1.0, 1.0 - (anchor_dist / 180.0)))
-    # dictionary score
     dict_score = 0.0
     nval = normalize_key(val)
     if nval in vendor_map:
@@ -79,37 +84,12 @@ def score_candidate(val: str, anchor_dist: float, kind: str, vendor_map: Dict[st
     return 0.5*dict_score + 0.3*pattern_score + 0.2*dist_score
 
 def extract_candidates_from_page(page) -> List[Candidate]:
-    words = page.extract_words(extra_attrs=["size"]) or []
-    # Home Depot packing slip: use only "Model Number" label -> value directly below
+    words = page.extract_words(extra_attrs=['size']) or []
     cands: List[Candidate] = []
     c = _extract_model_below(words)
     if c:
         cands.append(c)
     return cands
-
-def extract_all_tokens(page):
-    r"""Return a list of word tokens (text, x0, top, x1, bottom)."""
-    ws = page.extract_words(extra_attrs=["size"]) or []
-    return ws
-
-def dictionary_first_fallback(words, vendor_map):
-    r"""Scan all tokens; if any normalized token matches a map key (exact), return a Candidate with zero distance."""
-    idx_keys = set(vendor_map.keys())
-    best = None
-    for w in words:
-        text = (w.get("text") or "").strip()
-        if not text:
-            continue
-        # Tokenize by non-word breaks to catch model-like pieces
-        parts = re.findall(r"[A-Z0-9][A-Z0-9\-_/\.]{1,29}", text, flags=re.I)
-        for p in parts:
-            n = normalize_key(p)
-            if n in idx_keys:
-                # fabricate a candidate with strong anchor-like score
-                return Candidate(value=p, kind="model", anchor_text="DICT_MATCH", anchor_dist=0.0,
-                                 bbox=(w.get("x0",0.0), w.get("top",0.0), w.get("x1",0.0), w.get("bottom",0.0)))
-    return None
-
 
 def choose_best_vendor(cands: List[Candidate], vendor_map: Dict[str,str], threshold=0.88):
     if not cands:
@@ -122,11 +102,9 @@ def choose_best_vendor(cands: List[Candidate], vendor_map: Dict[str,str], thresh
         s = score_candidate(c.value, c.anchor_dist, c.kind, vendor_map, idx_keys)
         if s > best_score:
             best_score = s
-            # map by normalized value if possible
             nkey = normalize_key(c.value)
             v = vendor_map.get(nkey)
             if not v:
-                # fuzzy resolve to a key then map
                 match = process.extractOne(nkey, idx_keys, scorer=fuzz.token_set_ratio)
                 if match and match[1] >= 92:
                     v = vendor_map.get(match[0])
@@ -135,13 +113,13 @@ def choose_best_vendor(cands: List[Candidate], vendor_map: Dict[str,str], thresh
     if best_score >= threshold and best_vendor:
         return best_vendor, best, best_score, None
     else:
-        return None, best, best_score, "LOW_CONFIDENCE"
+        return None, best, best_score, 'LOW_CONFIDENCE'
 
 def split_pdf_to_vendors(pdf_path: str, out_dir: str, vendor_map: Dict[str,str], threshold=0.88):
     os.makedirs(out_dir, exist_ok=True)
     report_rows = []
     review_rows = []
-    page_exports = {}  # vendor -> list of (page_num, page_obj)
+    page_exports = {}  # vendor -> list of page indices
 
     from pypdf import PdfReader, PdfWriter
     rdr = PdfReader(pdf_path)
@@ -149,15 +127,7 @@ def split_pdf_to_vendors(pdf_path: str, out_dir: str, vendor_map: Dict[str,str],
     with pdfplumber.open(pdf_path) as pdf:
         for i, page in enumerate(pdf.pages):
             cands = extract_candidates_from_page(page)
-            if not cands:
-                # try dictionary-first fallback
-                dfb = dictionary_first_fallback(extract_all_tokens(page), vendor_map)
-                if dfb:
-                    cands = [dfb]
             vendor, best, score, flag = choose_best_vendor(cands, vendor_map, threshold=threshold)
-            # Collect a small debug snippet of candidate values
-            _cand_vals = ", ".join(sorted({c.value for c in cands})[:5])
-            # Report
             report_rows.append({
                 'page': i+1,
                 'vendor': vendor or '',
