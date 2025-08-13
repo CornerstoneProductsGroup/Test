@@ -1,4 +1,3 @@
-
 from dataclasses import dataclass
 from typing import List, Dict, Tuple, Optional
 import pdfplumber, re, os
@@ -6,29 +5,22 @@ from rapidfuzz import fuzz, process
 from pathlib import Path
 from vendor_map import normalize_key
 
-# ---- Patterns ----
 MODEL_PAT = re.compile(r"[A-Z0-9][A-Z0-9\-\/\.]{1,29}", re.I)
-SKU_PAT   = re.compile(r"\b\d{5,12}\b")
 
 @dataclass
 class Candidate:
     value: str
-    kind: str  # model|sku
+    kind: str  # model
     anchor_text: str
     anchor_dist: float
     bbox: Tuple[float, float, float, float]
 
-# ===== Home Depot: precise "Model Number" column extraction =====
-
 def _find_model_label_band(words, x_pad=12, below_px=140):
-    """Find the 'Model Number' label built from tokens 'Model' + 'Number' on the same line,
-    then return a tight vertical band directly beneath that label within which the model value appears."""
-    # Find any token 'Model'
+    # Find 'Model' + 'Number' on same baseline; return vertical band below.
     model_idxs = [i for i,w in enumerate(words) if (w.get('text','') or '').strip().lower() == 'model']
     for i in model_idxs:
         w1 = words[i]
         y_mid = (w1['top'] + w1['bottom']) / 2.0
-        # Find 'Number' token to the right on same baseline
         near = [w2 for w2 in words
                 if abs(((w2.get('top',0)+w2.get('bottom',0))/2.0) - y_mid) <= 4.0
                 and (w2.get('text','') or '').strip().lower() == 'number'
@@ -50,9 +42,7 @@ def _extract_model_below(words) -> Optional[Candidate]:
     if not band:
         return None
     bx0, bx1, ay, by = band
-    # Consider tokens within the narrow vertical band below the label
     below = [w for w in words if w.get('top',0) >= ay - 0.5 and w.get('top',0) <= by and w.get('x0',0) >= bx0 and w.get('x1',0) <= bx1]
-    # Sort by vertical position, then x
     below.sort(key=lambda w: (w.get('top',0.0), w.get('x0',0.0)))
     for w in below:
         txt = (w.get('text') or '').strip()
@@ -68,11 +58,9 @@ def _extract_model_below(words) -> Optional[Candidate]:
                              bbox=(w.get('x0',0.0), w.get('top',0.0), w.get('x1',0.0), w.get('bottom',0.0)))
     return None
 
-# ===== Candidate scoring & vendor resolution =====
-
 def score_candidate(val: str, anchor_dist: float, kind: str, vendor_map: Dict[str,str], idx_keys) -> float:
-    pattern_score = 0.9 if kind == 'model' else 0.85
-    dist_score = max(0.0, min(1.0, 1.0 - (anchor_dist / 180.0)))
+    pattern_score = 0.9
+    dist_score = 1.0
     dict_score = 0.0
     nval = normalize_key(val)
     if nval in vendor_map:
@@ -115,13 +103,11 @@ def choose_best_vendor(cands: List[Candidate], vendor_map: Dict[str,str], thresh
     else:
         return None, best, best_score, 'LOW_CONFIDENCE'
 
-import os as _os
 def split_pdf_to_vendors(pdf_path: str, out_dir: str, vendor_map: Dict[str,str], threshold=0.88):
-    master_name = _os.environ.get('HD_MASTER_NAME', 'Batch')
     os.makedirs(out_dir, exist_ok=True)
     report_rows = []
     review_rows = []
-    page_exports = {}  # vendor -> list of page indices
+    page_exports = {}
 
     from pypdf import PdfReader, PdfWriter
     rdr = PdfReader(pdf_path)
@@ -150,7 +136,6 @@ def split_pdf_to_vendors(pdf_path: str, out_dir: str, vendor_map: Dict[str,str],
                     'anchor': best.anchor_text if best else '',
                 })
 
-    # Write preliminary per-vendor PDFs
     out_pdfs = {}
     for vendor, pages in page_exports.items():
         w = PdfWriter()
@@ -159,6 +144,7 @@ def split_pdf_to_vendors(pdf_path: str, out_dir: str, vendor_map: Dict[str,str],
             w.add_page(src.pages[p])
         vend_dir = Path(out_dir)/vendor
         vend_dir.mkdir(parents=True, exist_ok=True)
+        master_name = os.environ.get('HD_MASTER_NAME', 'Batch')
         out_path = vend_dir / f"{master_name} {vendor}.pdf"
         with open(out_path, 'wb') as f:
             w.write(f)
