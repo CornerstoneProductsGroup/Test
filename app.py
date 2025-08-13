@@ -84,6 +84,9 @@ if run:
     pdf_path = out_root/"input.pdf"
     st.session_state['out_root'] = str(out_root)
     st.session_state['pdf_path'] = str(pdf_path)
+    # Master input name (without extension) for output naming
+    master_name = Path(pdf_file.name).stem if getattr(pdf_file, "name", None) else "Batch"
+    st.session_state["master_name"] = master_name
     with open(pdf_path, "wb") as f:
         f.write(pdf_file.getvalue())
 
@@ -104,6 +107,8 @@ if run:
     st.session_state["vendor_options"] = vendor_options
 
     with st.spinner("Extracting and splitting pages..."):
+        import os as _os
+        _os.environ['HD_MASTER_NAME'] = st.session_state.get('master_name','Batch')
         report_rows, review_rows, out_pdfs = split_core.split_pdf_to_vendors(str(pdf_path), str(out_root), vmap, threshold=threshold)
 
     # Build DataFrames
@@ -132,10 +137,16 @@ if run:
             for vend, path in out_pdfs.items():
                 z.write(path, arcname=f"{Path(path).name}")
         zip_bytes = zip_buf.getvalue()
-        zip_name = "vendor_pdfs.zip"
+        zip_name = f"{st.session_state.get('master_name', 'Batch')} - vendor_pdfs.zip"
     else:
         zip_bytes = None
         zip_name = "vendor_pdfs.zip"
+
+    # Persist a copy of the ZIP to disk for history
+    if zip_bytes:
+        zip_disk_path = out_root / (st.session_state.get("master_name", "Batch") + " - vendor_pdfs.zip")
+        with open(zip_disk_path, "wb") as _zf:
+            _zf.write(zip_bytes)
 
     # Persist to session so downloads & chart stay after clicking
     st.session_state["report_df"] = rep_df
@@ -197,7 +208,7 @@ if st.session_state.get("review_df") is not None and not st.session_state["revie
                             w.add_page(rdr.pages[pi])
                         vend_dir = _Path(out_root)/v
                         vend_dir.mkdir(parents=True, exist_ok=True)
-                        out_path = vend_dir / f"{v}.pdf"
+                        out_path = vend_dir / f"{st.session_state.get('master_name', 'Batch')} {v}.pdf"
                         with open(out_path, "wb") as f:
                             w.write(f)
                         out_pdfs[v] = str(out_path)
@@ -227,10 +238,16 @@ if st.session_state.get("review_df") is not None and not st.session_state["revie
                             for vend, path in out_pdfs.items():
                                 z.write(path, arcname=_Path(path).name)
                         zip_bytes = zip_buf.getvalue()
-                        zip_name = "vendor_pdfs.zip"
+                        zip_name = f"{st.session_state.get('master_name', 'Batch')} - vendor_pdfs.zip"
                     else:
                         zip_bytes = None
-                        zip_name = "vendor_pdfs.zip"
+                        zip_name = f"{st.session_state.get('master_name', 'Batch')} - vendor_pdfs.zip"
+
+                    # Persist a copy of the ZIP to disk for history
+                    if zip_bytes:
+                        _zip_disk_path = _Path(out_root) / (st.session_state.get("master_name", "Batch") + " - vendor_pdfs.zip")
+                        with open(_zip_disk_path, "wb") as _zf:
+                            _zf.write(zip_bytes)
 
                     # Persist back
                     st.session_state["report_df"] = rep_df
@@ -245,6 +262,22 @@ if st.session_state.get("review_df") is not None and not st.session_state["revie
                     st.error(f"Failed to apply selections: {e}")
 else:
     st.caption("No uncertain pages to review.")
+
+
+# --- Previous Batches ---
+st.markdown("---")
+st.subheader("Previous Batches")
+output_root = Path("output")
+zip_files = sorted(output_root.rglob("*.zip"))
+if zip_files:
+    options = [str(p) for p in zip_files]
+    labels = [p.name for p in zip_files]
+    sel_idx = st.selectbox("Select a past ZIP to download", range(len(labels)), format_func=lambda i: labels[i], key="prev_zip_sel")
+    chosen = zip_files[sel_idx]
+    with open(chosen, "rb") as f:
+        st.download_button("Download selected ZIP", f.read(), file_name=chosen.name, key="dl_prev_zip")
+else:
+    st.caption("No previous batches yet. Process a PDF to create your first batch.")
 
 # Always show persisted outputs if available
 _persist_and_show_outputs()

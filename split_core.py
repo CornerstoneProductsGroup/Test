@@ -115,7 +115,9 @@ def choose_best_vendor(cands: List[Candidate], vendor_map: Dict[str,str], thresh
     else:
         return None, best, best_score, 'LOW_CONFIDENCE'
 
+import os as _os
 def split_pdf_to_vendors(pdf_path: str, out_dir: str, vendor_map: Dict[str,str], threshold=0.88):
+    master_name = _os.environ.get('HD_MASTER_NAME', 'Batch')
     os.makedirs(out_dir, exist_ok=True)
     report_rows = []
     review_rows = []
@@ -157,7 +159,7 @@ def split_pdf_to_vendors(pdf_path: str, out_dir: str, vendor_map: Dict[str,str],
             w.add_page(src.pages[p])
         vend_dir = Path(out_dir)/vendor
         vend_dir.mkdir(parents=True, exist_ok=True)
-        out_path = vend_dir / f"{vendor}.pdf"
+        out_path = vend_dir / f"{master_name} {vendor}.pdf"
         with open(out_path, 'wb') as f:
             w.write(f)
         out_pdfs[vendor] = str(out_path)
