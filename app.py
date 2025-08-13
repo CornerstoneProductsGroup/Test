@@ -234,7 +234,12 @@ if run:
     else:
         vc = pd.Series(dtype=int)
 
-    # Build Print Pack (initial)
+    # Persist early so UI shows even if later steps fail
+st.session_state['report_df'] = rep_df
+st.session_state['review_df'] = err_df
+st.session_state['vendor_counts'] = vc
+
+# Build Print Pack (initial)
 try:
     pp_path, included = _build_print_pack_alpha(st.session_state["out_pdfs"], out_root, st.session_state.get('master_name','Batch'))
     if pp_path:
@@ -252,17 +257,28 @@ except Exception as e:
     st.warning(f"Could not build Print Pack: {e}")
 
     # Build ZIP (include Print Pack)
+try:
     zip_buf = None
-    if st.session_state["out_pdfs"]:
+    if st.session_state['out_pdfs']:
         zip_buf = io.BytesIO()
         with zipfile.ZipFile(zip_buf, 'w', zipfile.ZIP_DEFLATED) as z:
-            for vend, path in st.session_state["out_pdfs"].items():
+            for vend, path in st.session_state['out_pdfs'].items():
                 z.write(path, arcname=f"{Path(path).name}")
-            if st.session_state.get("print_pack_disk_path"):
-                z.write(st.session_state["print_pack_disk_path"], arcname=Path(st.session_state["print_pack_disk_path"]).name)
+            if st.session_state.get('print_pack_disk_path'):
+                z.write(st.session_state['print_pack_disk_path'], arcname=Path(st.session_state['print_pack_disk_path']).name)
         zip_bytes = zip_buf.getvalue()
-        zip_name = f"{st.session_state.get('master_name', 'Batch')} - vendor_pdfs.zip"
-        # Persist copy to disk for history
+    else:
+        zip_bytes = None
+    zip_name = f"{st.session_state.get('master_name', 'Batch')} - vendor_pdfs.zip"
+    # Persist copy to disk for history if we have bytes
+    if zip_bytes:
+        zip_disk_path = Path(st.session_state.get('out_root','output')) / zip_name
+        with open(zip_disk_path, 'wb') as _zf:
+            _zf.write(zip_bytes)
+except Exception as e:
+    st.warning(f"Could not build ZIP: {e}")
+
+# Persist copy to disk for history
         zip_disk_path = Path(st.session_state.get('out_root', 'output')) / zip_name
         with open(zip_disk_path, "wb") as _zf:
             _zf.write(zip_bytes)
@@ -279,6 +295,13 @@ except Exception as e:
 
 # Always show persisted outputs
 _persist_and_show_outputs()
+
+with st.expander('Debug (counts & keys)', expanded=False):
+    st.write('out_pdfs vendors:', list(st.session_state.get('out_pdfs', {}).keys()))
+    rep = st.session_state.get('report_df')
+    rev = st.session_state.get('review_df')
+    st.write('report rows:', 0 if rep is None else len(rep))
+    st.write('review rows:', 0 if rev is None else (0 if rev is None else len(rev)))
 
 # --- Review & Fix ---
 st.markdown("---")
@@ -340,7 +363,11 @@ if st.session_state.get("review_df") is not None and not st.session_state["revie
                     review_df = st.session_state["review_df"].copy()
                     review_df = review_df[~review_df['page'].isin(list(selections.keys()))]
 
-                    # Recompute counts
+                    # Persist early so UI shows even if later steps fail
+st.session_state['report_df'] = rep_df
+st.session_state['review_df'] = review_df
+
+# Recompute counts
                     if not rep_df.empty:
                         vc = rep_df["vendor"].fillna("").replace("", pd.NA).dropna().value_counts()
                     else:
@@ -365,25 +392,27 @@ if st.session_state.get("review_df") is not None and not st.session_state["revie
                         st.warning(f"Could not build Print Pack: {e}")
 
                     # Rebuild ZIP (include Print Pack)
-                    zip_buf = None
-                    if out_pdfs:
-                        zip_buf = io.BytesIO()
-                        with zipfile.ZipFile(zip_buf, 'w', zipfile.ZIP_DEFLATED) as z:
-                            for vend, path in out_pdfs.items():
-                                z.write(path, arcname=Path(path).name)
-                            if st.session_state.get("print_pack_disk_path"):
-                                z.write(st.session_state["print_pack_disk_path"], arcname=Path(st.session_state["print_pack_disk_path"]).name)
-                        zip_bytes = zip_buf.getvalue()
-                        zip_name = f"{st.session_state.get('master_name','Batch')} - vendor_pdfs.zip"
-                        # Persist disk copy
-                        zip_disk_path = Path(out_root) / zip_name
-                        with open(zip_disk_path, "wb") as _zf:
-                            _zf.write(zip_bytes)
-                    else:
-                        zip_bytes = None
-                        zip_name = f"{st.session_state.get('master_name','Batch')} - vendor_pdfs.zip"
+try:
+    zip_buf = None
+    if out_pdfs:
+        zip_buf = io.BytesIO()
+        with zipfile.ZipFile(zip_buf, 'w', zipfile.ZIP_DEFLATED) as z:
+            for vend, path in out_pdfs.items():
+                z.write(path, arcname=Path(path).name)
+            if st.session_state.get('print_pack_disk_path'):
+                z.write(st.session_state['print_pack_disk_path'], arcname=Path(st.session_state['print_pack_disk_path']).name)
+        zip_bytes = zip_buf.getvalue()
+    else:
+        zip_bytes = None
+    zip_name = f"{st.session_state.get('master_name','Batch')} - vendor_pdfs.zip"
+    if zip_bytes:
+        zip_disk_path = Path(out_root) / zip_name
+        with open(zip_disk_path, 'wb') as _zf:
+            _zf.write(zip_bytes)
+except Exception as e:
+    st.warning(f"Could not build ZIP: {e}")
 
-                    # Persist back
+# Persist back
                     st.session_state["report_df"] = rep_df
                     st.session_state["review_df"] = review_df
                     st.session_state["vendor_counts"] = vc
