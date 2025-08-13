@@ -74,11 +74,16 @@ def _persist_and_show_outputs():
             st.bar_chart(vc)
 
 if run:
+    # Track paths in session for later corrections
+    st.session_state['pdf_path'] = None
+    st.session_state['out_root'] = None
     out_root = Path("output")/datetime.now().strftime("%Y-%m-%d")
     out_root.mkdir(parents=True, exist_ok=True)
 
     # Save inputs
     pdf_path = out_root/"input.pdf"
+    st.session_state['out_root'] = str(out_root)
+    st.session_state['pdf_path'] = str(pdf_path)
     with open(pdf_path, "wb") as f:
         f.write(pdf_file.getvalue())
 
@@ -93,12 +98,25 @@ if run:
         st.error(f"Failed to load vendor map: {e}")
         st.stop()
 
+
+    # Build vendor options for dropdowns
+    vendor_options = sorted(set(vmap.values()))
+    st.session_state["vendor_options"] = vendor_options
+
     with st.spinner("Extracting and splitting pages..."):
         report_rows, review_rows, out_pdfs = split_core.split_pdf_to_vendors(str(pdf_path), str(out_root), vmap, threshold=threshold)
 
     # Build DataFrames
     rep_df = pd.DataFrame(report_rows)
     err_df = pd.DataFrame(review_rows)
+
+    # Build initial auto assignments from the report
+    auto_assign = {}
+    if not rep_df.empty:
+        for _, r in rep_df.iterrows():
+            if isinstance(r.get('vendor'), str) and r.get('vendor') and (not isinstance(r.get('flag'), str) or r.get('flag') == ''):
+                auto_assign[int(r['page'])] = r['vendor']
+    st.session_state['auto_assign'] = auto_assign
 
     # Compute vendor counts
     if not rep_df.empty:
@@ -125,6 +143,108 @@ if run:
     st.session_state["vendor_counts"] = vc
     st.session_state["zip_bytes"] = zip_bytes
     st.session_state["zip_name"] = zip_name
+
+
+# --- Review & Fix ---
+st.markdown("---")
+st.subheader("Review & Fix (Assign vendors for uncertain pages)")
+
+if st.session_state.get("review_df") is not None and not st.session_state["review_df"].empty:
+    vendor_options = st.session_state.get("vendor_options", [])
+    if not vendor_options:
+        st.info("Upload a vendor map to populate the dropdown options.")
+    else:
+        st.write("Pick a vendor for each page below, then click **Apply selections**.")
+        # Build selection widgets
+        selections = {}
+        for idx, row in st.session_state["review_df"].iterrows():
+            page_no = int(row['page'])
+            key_sel = f"sel_vendor_{page_no}"
+            default_idx = 0 if vendor_options else None
+            sel = st.selectbox(f"Page {page_no} – detected: {row.get('best_value','')}", vendor_options, key=key_sel)
+            selections[page_no] = sel
+
+        apply = st.button("Apply selections and update vendor files", type="primary", key="apply_sel_btn")
+        if apply:
+            # Build combined assignments: auto + overrides
+            combined = dict(st.session_state.get("auto_assign", {}))
+            combined.update({p: v for p, v in selections.items() if v})
+
+            # Rebuild vendor PDFs from source using combined assignments
+            src_pdf = st.session_state.get("pdf_path")
+            out_root = st.session_state.get("out_root")
+            if not src_pdf or not out_root:
+                st.error("Missing source PDF path or output directory in session.")
+            else:
+                try:
+                    from pypdf import PdfReader, PdfWriter
+                    rdr = PdfReader(src_pdf)
+
+                    # vendor -> list of zero-based page indices
+                    vpages = {}
+                    for p, v in combined.items():
+                        vpages.setdefault(v, []).append(p-1)
+
+                    # Write each vendor PDF fresh
+                    out_pdfs = {}
+                    from pathlib import Path as _Path
+                    for v, pages in vpages.items():
+                        pages = sorted(set([pp for pp in pages if 0 <= pp < len(rdr.pages)]))
+                        if not pages:
+                            continue
+                        w = PdfWriter()
+                        for pi in pages:
+                            w.add_page(rdr.pages[pi])
+                        vend_dir = _Path(out_root)/v
+                        vend_dir.mkdir(parents=True, exist_ok=True)
+                        out_path = vend_dir / f"{v}.pdf"
+                        with open(out_path, "wb") as f:
+                            w.write(f)
+                        out_pdfs[v] = str(out_path)
+
+                    # Update report_df with overrides
+                    rep_df = st.session_state["report_df"].copy()
+                    for p, v in selections.items():
+                        rep_df.loc[rep_df['page'] == p, ['vendor','flag']] = [v, '']
+
+                    # Remove fixed pages from review_df
+                    review_df = st.session_state["review_df"].copy()
+                    review_df = review_df[~review_df['page'].isin(list(selections.keys()))]
+
+                    # Recompute vendor counts
+                    if not rep_df.empty:
+                        vc = rep_df["vendor"].fillna("").replace("", pd.NA).dropna().value_counts()
+                    else:
+                        import pandas as _pd
+                        vc = _pd.Series(dtype=int)
+
+                    # Rebuild ZIP
+                    import io, zipfile
+                    zip_buf = None
+                    if out_pdfs:
+                        zip_buf = io.BytesIO()
+                        with zipfile.ZipFile(zip_buf, 'w', zipfile.ZIP_DEFLATED) as z:
+                            for vend, path in out_pdfs.items():
+                                z.write(path, arcname=_Path(path).name)
+                        zip_bytes = zip_buf.getvalue()
+                        zip_name = "vendor_pdfs.zip"
+                    else:
+                        zip_bytes = None
+                        zip_name = "vendor_pdfs.zip"
+
+                    # Persist back
+                    st.session_state["report_df"] = rep_df
+                    st.session_state["review_df"] = review_df
+                    st.session_state["vendor_counts"] = vc
+                    st.session_state["zip_bytes"] = zip_bytes
+                    st.session_state["zip_name"] = zip_name
+                    st.session_state["auto_assign"] = combined
+
+                    st.success("Selections applied. Vendor PDFs and chart updated.")
+                except Exception as e:
+                    st.error(f"Failed to apply selections: {e}")
+else:
+    st.caption("No uncertain pages to review.")
 
 # Always show persisted outputs if available
 _persist_and_show_outputs()
