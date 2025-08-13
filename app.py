@@ -83,27 +83,20 @@ def _norm_vendor(s: str) -> str:
     s = (s or "").upper()
     return _re.sub(r"[^A-Z0-9]", "", s)
 
-PRINT_PACK_SYNONYMS = {"POSTPROTECTORHERE": "POSTPROTECTOR", "WEEDSHARK": "WEEDSHARK"}
-PRINT_PACK_VENDORS = ["Cord Mate", "Cornerstone", "Gate Latch", "Home Selects", "Nisus", "Post Protector Here", "Soft Seal", "Weedshark"]
+PRINT_PACK_SYNONYMS = {}
+PRINT_PACK_VENDORS = ["Cord Mate", "Cornerstone", "Gate Latch", "Home Selects", "Nisus", "Post Protector-Here", "Soft Seal", "Weedshark"]
 
 def _build_print_pack_alpha(out_pdfs: dict, out_root: Path, master_name: str):
-    """Build Print Pack from PRINT_PACK_VENDORS with tolerant matching and
-    alphabetical vendor order. Returns (path or None, included vendors)."""
+    """Build Print Pack from PRINT_PACK_VENDORS using STRICT normalized equality.
+    Returns (path or None, included vendors in A→Z)."""
     from pypdf import PdfReader, PdfWriter
-    # Apply synonyms when normalizing targets
-    targets = set()
-    for t in PRINT_PACK_VENDORS:
-        nt = _norm_vendor(t)
-        nt = PRINT_PACK_SYNONYMS.get(nt, nt)
-        targets.add(nt)
+    # Build normalized target set (no synonyms)
+    targets = { _norm_vendor(t) for t in PRINT_PACK_VENDORS }
     matched = {}
     for vendor_name, pth in out_pdfs.items():
         nk = _norm_vendor(vendor_name)
-        for nt in targets:
-            if nk == nt or nk.startswith(nt) or nt.startswith(nk) or (nt in nk) or (nk in nt):
-                if Path(pth).exists():
-                    matched[vendor_name] = pth
-                break
+        if nk in targets and Path(pth).exists():
+            matched[vendor_name] = pth
     if not matched:
         return None, []
     ordered_vendor_names = sorted(matched.keys(), key=lambda s: s.upper())
