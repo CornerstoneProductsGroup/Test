@@ -106,30 +106,6 @@ with st.sidebar:
 
 st.markdown("---")
 # Tractor Supply map
-st.subheader("Tractor Supply Map")
-def_path_tsc = Path("data")/"vendor_map_tsc.xlsx"
-if def_path_tsc.exists():
-    st.caption(f"Default (TSC): **{def_path_tsc.name}**")
-    try:
-        from datetime import datetime as _dt
-        st.caption("Last updated: " + _dt.fromtimestamp(def_path_tsc.stat().st_mtime).strftime("%Y-%m-%d %H:%M:%S"))
-    except Exception: pass
-    try:
-        with open(def_path_tsc, "rb") as _f:
-            st.download_button("Download TSC default map", _f.read(), file_name=def_path_tsc.name, key="dl_default_map_tsc")
-    except Exception:
-        st.caption("TSC default map not readable.")
-else:
-    st.caption("No TSC default map yet.")
-new_map_tsc = st.file_uploader("Upload new TSC vendor map (.xlsx)", type=["xlsx"], key="upl_new_map_tsc")
-if new_map_tsc is not None:
-    if st.button("Set as TSC default", key="btn_set_default_tsc"):
-        def_path_tsc.parent.mkdir(parents=True, exist_ok=True)
-        with open(def_path_tsc, "wb") as _out:
-            _out.write(new_map_tsc.getvalue())
-        st.success("Tractor Supply default vendor map updated.")
-
-
 # ---- Sidebar: Downloads & history ----
 with st.sidebar:
     st.header("Downloads")
