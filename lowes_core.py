@@ -1,6 +1,7 @@
 from dataclasses import dataclass
 from typing import List, Dict, Tuple, Optional
 import pdfplumber, re, os
+import re as _re
 from rapidfuzz import fuzz, process
 from pathlib import Path
 from vendor_map import normalize_key
