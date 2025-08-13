@@ -67,23 +67,64 @@ def extract_candidates_from_page(page) -> List[Candidate]:
     return [c] if c else []
 
 def score_candidate(val: str, vendor_map: Dict[str,str], idx_keys) -> float:
-    """Score with map-aware cleaning:
-    - pull a letter-leading subtoken inside val (e.g., from '11UP-CLEANER-XTRA6506389')
-    - exact match on cleaned token wins
-    - otherwise try partial-ratio fuzzy against map keys
+    """Score with map-aware cleaning and canonical checks:
+    - extract letter-leading subtokens (e.g., from '11UP-CLEANER-XTRA6506389')
+    - exact match on normalize_key or canonical_key (A-Z0-9 only)
+    - otherwise try token_set_ratio (>=90) or partial_ratio (>=95)
     """
     pattern_score = 0.9
     dict_score = 0.0
-    # Prefer a letter-leading subtoken 2..30 chars
+
+    def canon(s: str) -> str:
+        # normalize_key then strip non-alphanumerics
+        return _re.sub(r'[^A-Z0-9]+', '', normalize_key(s))
+
+    # Build candidate strings
     subs = _re.findall(r"[A-Za-z][A-Za-z0-9\-/_\.]{1,29}", val or "")
-    # Consider raw val too, in case it's already clean
-    cands = [val] + subs
-    # Exact membership check
-    for sc in cands:
-        n = normalize_key(sc)
-        if n in vendor_map:
+    candidates = [val] + subs
+
+    # Heuristic: UPROOT variants (UP-... vs UPROOT ...)
+    extra = []
+    for c in list(candidates):
+        if c and c.upper().startswith("UP") and not c.upper().startswith("UPROOT"):
+            rest = c[2:].lstrip(" -_/")
+            extra.append("UPROOT " + rest)
+    candidates += extra
+
+    keys = idx_keys
+    canon_map = { _re.sub(r'[^A-Z0-9]+', '', k): k for k in keys }
+
+    # Exact membership (normalized)
+    for c in candidates:
+        nk = normalize_key(c)
+        if nk in vendor_map:
             dict_score = 1.0
             return 0.55*dict_score + 0.45*pattern_score
+
+    # Canonical membership (A-Z0-9 only)
+    for c in candidates:
+        ck = canon(c)
+        if ck in canon_map and canon_map[ck] in vendor_map:
+            dict_score = 1.0
+            return 0.55*dict_score + 0.45*pattern_score
+
+    # Fuzzy fallback: token_set_ratio then partial_ratio
+    from rapidfuzz import fuzz, process
+    probe = max(subs, key=len) if subs else (val or "")
+    nprobe = normalize_key(probe)
+
+    best1 = process.extractOne(nprobe, keys, scorer=fuzz.token_set_ratio)
+    if best1 and best1[1] >= 90:
+        dict_score = 0.9
+        return 0.55*dict_score + 0.45*pattern_score
+
+    best2 = process.extractOne(nprobe, keys, scorer=fuzz.partial_ratio)
+    if best2 and best2[1] >= 95:
+        dict_score = 0.9
+        return 0.55*dict_score + 0.45*pattern_score
+
+    return 0.55*dict_score + 0.45*pattern_score
+
     # Partial match (substring) fallback at a high bar
     from rapidfuzz import fuzz, process
     # Use the longest subtoken if present, else the original
@@ -98,25 +139,57 @@ def choose_best_vendor(cands: List[Candidate], vendor_map: Dict[str,str], thresh
     if not cands:
         return None, None, 0.0, None
     idx_keys = list(vendor_map.keys())
+
+    def canon(s: str) -> str:
+        return _re.sub(r'[^A-Z0-9]+', '', normalize_key(s))
+
+    canon_map = { _re.sub(r'[^A-Z0-9]+', '', k): k for k in idx_keys }
+
     best = None
     best_score = -1.0
     best_vendor = None
+
+    from rapidfuzz import fuzz, process
+
     for c in cands:
         s = score_candidate(c.value, vendor_map, idx_keys)
+        nkey = normalize_key(c.value)
+        v = vendor_map.get(nkey)
+
+        if not v:
+            # Canonical exact match
+            ck = canon(c.value)
+            k2 = canon_map.get(ck)
+            if k2:
+                v = vendor_map.get(k2)
+
+        if not v:
+            # Fuzzy options on the strongest probe
+            subs = _re.findall(r"[A-Za-z][A-Za-z0-9\-/_\.]{1,29}", c.value or "")
+            probe = max(subs, key=len) if subs else (c.value or "")
+            nprobe = normalize_key(probe)
+
+            m1 = process.extractOne(nprobe, idx_keys, scorer=fuzz.token_set_ratio)
+            m2 = process.extractOne(nprobe, idx_keys, scorer=fuzz.partial_ratio)
+
+            pick = None
+            if m1 and m1[1] >= 90:
+                pick = m1
+            if (not pick) and m2 and m2[1] >= 95:
+                pick = m2
+            if pick:
+                v = vendor_map.get(pick[0])
+
         if s > best_score:
             best_score = s
-            nkey = normalize_key(c.value)
-            v = vendor_map.get(nkey)
-            if not v:
-                match = process.extractOne(nkey, idx_keys, scorer=fuzz.token_set_ratio)
-                if match and match[1] >= 92:
-                    v = vendor_map.get(match[0])
             best = c
             best_vendor = v
+
     if best_score >= threshold and best_vendor:
         return best_vendor, best, best_score, None
     else:
         return None, best, best_score, 'LOW_CONFIDENCE'
+
 
 def split_pdf_to_vendors(pdf_path: str, out_dir: str, vendor_map: Dict[str,str], threshold=0.88):
     os.makedirs(out_dir, exist_ok=True)
