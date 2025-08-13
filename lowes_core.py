@@ -18,24 +18,22 @@ class Candidate:
     bbox: Tuple[float, float, float, float]
 
 def _find_band(words, x_pad_left=60, x_pad_right=220, below_px=180):
-    # Find "Model #" or "Model Number" on a single baseline and return a narrow vertical band below it.
+    """Locate a "Model #" or "Model Number" header and return a vertical capture band below it."""
     lower = [(i, (w.get('text','') or '').strip().lower(), w) for i, w in enumerate(words)]
     for i, txt, w0 in lower:
-        # accept 'model#' or 'model #' in one token too
+        # accept 'model', 'model#', or 'model #' as the left token
         if txt in ('model', 'model#', 'model #'):
-            # look for "#" or "number" to the right on same baseline
             baseline = (w0.get('top',0)+w0.get('bottom',0))/2.0
-            candidates = [("#", "Model #"), ("number", "Model Number")]
-            for needle, label in candidates:
+            for needle, label in (('#', 'Model #'), ('number', 'Model Number')):
                 nxt = None
                 for _, t2, w2 in lower:
-                    if abs(((w2.get('top',0)+w2.get('bottom',0))/2.0) - baseline) <= 4.0 and w2.get('x0',0) >= w0.get('x1',0) - 2 and (w2.get('x0',0)-w0.get('x1',0)) <= 120:
+                    if abs(((w2.get('top',0)+w2.get('bottom',0))/2.0) - baseline) <= 4.0                                    and w2.get('x0',0) >= w0.get('x1',0) - 2                                    and (w2.get('x0',0)-w0.get('x1',0)) <= 120:
                         if t2 == needle:
                             nxt = w2
                             break
                 if nxt is not None:
                     x0 = min(w0.get('x0',0), nxt.get('x0',0)) - x_pad_left
-            x1 = max(w0.get('x1',0), nxt.get('x1',0)) + x_pad_right
+                    x1 = max(w0.get('x1',0), nxt.get('x1',0)) + x_pad_right
                     anchor_bottom = max(w0.get('bottom',0), nxt.get('bottom',0))
                     band_y1 = anchor_bottom + below_px
                     return (x0, x1, anchor_bottom, band_y1, label)
