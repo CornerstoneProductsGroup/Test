@@ -51,30 +51,31 @@ PRINT_PACK_SYNONYMS = {"POSTPROTECTORHERE": "POSTPROTECTOR", "WEEDSHARK": "WEEDS
 PRINT_PACK_VENDORS = ["Cord Mate", "Cornerstone", "Gate Latch", "Home Selects", "Nisus", "Post Protector Here", "Soft Seal", "Weedshark"]
 
 def _build_print_pack_alpha(out_pdfs: dict, out_root: Path, master_name: str):
-    """Build Print Pack from PRINT_PACK_VENDORS, matching tolerantly, but
-    concatenating vendor PDFs in **alphabetical order by matched vendor name**.
-    Returns (print_pack_path or None, included_vendor_names list)."""
+    """Build Print Pack from PRINT_PACK_VENDORS with tolerant matching and
+    alphabetical vendor order. Returns (path or None, included vendors)."""
     from pypdf import PdfReader, PdfWriter
-    targets = set(_norm_vendor(t) for t in PRINT_PACK_VENDORS)
-    # Map normalized -> actual vendor name from out_pdfs
+    # Apply synonyms when normalizing targets
+    targets = set()
+    for t in PRINT_PACK_VENDORS:
+        nt = _norm_vendor(t)
+        nt = PRINT_PACK_SYNONYMS.get(nt, nt)
+        targets.add(nt)
     matched = {}
     for vendor_name, pth in out_pdfs.items():
         nk = _norm_vendor(vendor_name)
         for nt in targets:
             if nk == nt or nk.startswith(nt) or nt.startswith(nk) or (nt in nk) or (nk in nt):
-                matched[vendor_name] = pth
+                if Path(pth).exists():
+                    matched[vendor_name] = pth
                 break
     if not matched:
         return None, []
-
-    # Sort by vendor name alphabetically
     ordered_vendor_names = sorted(matched.keys(), key=lambda s: s.upper())
     writer = PdfWriter()
     for vname in ordered_vendor_names:
         r = PdfReader(matched[vname])
         for pg in r.pages:
             writer.add_page(pg)
-
     pack_path = Path(out_root) / f"{master_name} - Print Pack.pdf"
     with open(pack_path, "wb") as f:
         writer.write(f)
@@ -229,6 +230,36 @@ if run:
     rep_df = pd.DataFrame(report_rows)
     err_df = pd.DataFrame(review_rows)
     st.session_state["out_pdfs"] = out_pdfs if out_pdfs else {}
+    # Fallback: if out_pdfs is empty, rebuild from disk under out_root
+    if not st.session_state['out_pdfs']:
+        scan_root = Path(st.session_state.get('out_root','output'))
+        disk_map = {}
+        try:
+            for vend_dir in sorted([p for p in scan_root.glob('*') if p.is_dir()]):
+                vend = vend_dir.name
+                pdfs = sorted(vend_dir.glob('*.pdf'))
+                if pdfs:
+                    disk_map[vend] = str(pdfs[0])
+        except Exception as _e:
+            pass
+        if disk_map:
+            st.session_state['out_pdfs'] = disk_map
+
+    # Fallback: if out_pdfs is empty, rebuild from disk under out_root
+    if not st.session_state['out_pdfs']:
+        scan_root = Path(st.session_state.get('out_root','output'))
+        disk_map = {}
+        try:
+            for vend_dir in sorted([p for p in scan_root.glob('*') if p.is_dir()]):
+                vend = vend_dir.name
+                pdfs = sorted(vend_dir.glob('*.pdf'))
+                if pdfs:
+                    disk_map[vend] = str(pdfs[0])
+        except Exception as _e:
+            pass
+        if disk_map:
+            st.session_state['out_pdfs'] = disk_map
+
     if not rep_df.empty:
         vc = rep_df["vendor"].fillna("").replace("", pd.NA).dropna().value_counts()
     else:
@@ -278,12 +309,12 @@ try:
 except Exception as e:
     st.warning(f"Could not build ZIP: {e}")
 
-    # Persist
-    st.session_state["report_df"] = rep_df
+# Persist
+st.session_state["report_df"] = rep_df
     st.session_state["review_df"] = err_df
     st.session_state["vendor_counts"] = vc
     st.session_state["zip_bytes"] = zip_bytes
-    st.session_state["zip_name"] = zip_name
+    st.session_state["zip_name"] = zip_namep_namep_name
 
 # Always show persisted outputs
 _persist_and_show_outputs()
@@ -347,6 +378,36 @@ if st.session_state.get("review_df") is not None and not st.session_state["revie
 
                     # Update session out_pdfs
                     st.session_state["out_pdfs"] = out_pdfs if out_pdfs else {}
+    # Fallback: if out_pdfs is empty, rebuild from disk under out_root
+    if not st.session_state['out_pdfs']:
+        scan_root = Path(st.session_state.get('out_root','output'))
+        disk_map = {}
+        try:
+            for vend_dir in sorted([p for p in scan_root.glob('*') if p.is_dir()]):
+                vend = vend_dir.name
+                pdfs = sorted(vend_dir.glob('*.pdf'))
+                if pdfs:
+                    disk_map[vend] = str(pdfs[0])
+        except Exception as _e:
+            pass
+        if disk_map:
+            st.session_state['out_pdfs'] = disk_map
+
+    # Fallback: if out_pdfs is empty, rebuild from disk under out_root
+    if not st.session_state['out_pdfs']:
+        scan_root = Path(st.session_state.get('out_root','output'))
+        disk_map = {}
+        try:
+            for vend_dir in sorted([p for p in scan_root.glob('*') if p.is_dir()]):
+                vend = vend_dir.name
+                pdfs = sorted(vend_dir.glob('*.pdf'))
+                if pdfs:
+                    disk_map[vend] = str(pdfs[0])
+        except Exception as _e:
+            pass
+        if disk_map:
+            st.session_state['out_pdfs'] = disk_map
+
 
                     # Update report/review
                     rep_df = st.session_state["report_df"].copy()
@@ -410,7 +471,7 @@ if st.session_state.get("review_df") is not None and not st.session_state["revie
                     st.session_state["review_df"] = review_df
                     st.session_state["vendor_counts"] = vc
                     st.session_state["zip_bytes"] = zip_bytes
-                    st.session_state["zip_name"] = zip_name
+                    st.session_state["zip_name"] = zip_namep_namep_name
                     st.success("Selections applied. Vendor PDFs and Print Pack updated.")
             except Exception as e:
                 st.error(f"Failed to apply selections: {e}")
