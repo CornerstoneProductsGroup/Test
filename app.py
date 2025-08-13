@@ -66,12 +66,12 @@ def _persist_and_show_outputs():
 
     # Summary chart (vendor counts)
     if st.session_state["vendor_counts"] is not None:
-        import matplotlib.pyplot as plt
         vc = st.session_state["vendor_counts"]
         st.subheader("Pages per Vendor")
-        fig = plt.figure()
-        vc.plot(kind="bar")
-        st.pyplot(fig)
+        if hasattr(vc, 'to_frame'):
+            st.bar_chart(vc.to_frame(name="pages"))
+        else:
+            st.bar_chart(vc)
 
 if run:
     out_root = Path("output")/datetime.now().strftime("%Y-%m-%d")
