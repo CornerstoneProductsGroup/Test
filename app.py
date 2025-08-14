@@ -1,3 +1,4 @@
+
 import streamlit as st
 import pandas as pd
 from datetime import datetime
@@ -5,9 +6,9 @@ from pathlib import Path
 import io, os, zipfile
 
 from vendor_map import load_vendor_map, normalize_key
-import split_core  # HD
+import split_core  # Home Depot
 import lowes_core  # Lowe's
-import tsc_core  # Tractor Supply
+import tsc_core    # Tractor Supply
 
 st.set_page_config(page_title="Retail Order Splitter", layout="wide")
 st.title("Retail Order Splitter – Anchor-Based (HD & Lowe's)")
@@ -20,7 +21,6 @@ def _default_map_for(state_prefix: str) -> Path:
         fname = "vendor_map_lowes.xlsx"
     elif state_prefix == "tsc":
         fname = "vendor_map_tsc.xlsx"
-        fname = "vendor_map_lowes.xlsx"
     return Path("data")/fname
 
 # ---- Utilities ----
@@ -32,7 +32,6 @@ def _norm_vendor(s: str) -> str:
 PRINT_PACK_VENDORS = ["Cord Mate", "Cornerstone", "Gate Latch", "Home Selects", "Nisus", "Post Protector-Here", "Soft Seal", "Weedshark"]
 
 def _build_print_pack_alpha(out_pdfs: dict, out_root: Path, master_name: str):
-    """STRICT normalized equality, alphabetical by vendor name"""
     from pypdf import PdfReader, PdfWriter
     targets = { _norm_vendor(t) for t in PRINT_PACK_VENDORS }
     matched = {}
@@ -54,12 +53,9 @@ def _build_print_pack_alpha(out_pdfs: dict, out_root: Path, master_name: str):
     return str(pack_path), ordered_vendor_names
 
 # ---- Sidebar: Vendor Map managers ----
-
 with st.sidebar:
-    # ===== Vendor Map managers =====
     st.header("Vendor Map")
-
-    # Home Depot Map
+    # Home Depot map
     st.subheader("Home Depot Map")
     def_path_hd = Path("data")/"vendor_map_hd.xlsx"
     if def_path_hd.exists():
@@ -67,8 +63,7 @@ with st.sidebar:
         try:
             from datetime import datetime as _dt
             st.caption("Last updated: " + _dt.fromtimestamp(def_path_hd.stat().st_mtime).strftime("%Y-%m-%d %H:%M:%S"))
-        except Exception:
-            pass
+        except Exception: pass
         try:
             with open(def_path_hd, "rb") as _f:
                 st.download_button("Download HD default map", _f.read(), file_name=def_path_hd.name, key="dl_default_map_hd")
@@ -86,7 +81,7 @@ with st.sidebar:
 
     st.markdown("---")
 
-    # Lowe's Map
+    # Lowe's map
     st.subheader("Lowe's Map")
     def_path_lw = Path("data")/"vendor_map_lowes.xlsx"
     if def_path_lw.exists():
@@ -94,8 +89,7 @@ with st.sidebar:
         try:
             from datetime import datetime as _dt
             st.caption("Last updated: " + _dt.fromtimestamp(def_path_lw.stat().st_mtime).strftime("%Y-%m-%d %H:%M:%S"))
-        except Exception:
-            pass
+        except Exception: pass
         try:
             with open(def_path_lw, "rb") as _f:
                 st.download_button("Download Lowe's default map", _f.read(), file_name=def_path_lw.name, key="dl_default_map_lw")
@@ -113,7 +107,7 @@ with st.sidebar:
 
     st.markdown("---")
 
-    # Tractor Supply Map
+    # Tractor Supply map
     st.subheader("Tractor Supply Map")
     def_path_tsc = Path("data")/"vendor_map_tsc.xlsx"
     if def_path_tsc.exists():
@@ -121,8 +115,7 @@ with st.sidebar:
         try:
             from datetime import datetime as _dt
             st.caption("Last updated: " + _dt.fromtimestamp(def_path_tsc.stat().st_mtime).strftime("%Y-%m-%d %H:%M:%S"))
-        except Exception:
-            pass
+        except Exception: pass
         try:
             with open(def_path_tsc, "rb") as _f:
                 st.download_button("Download TSC default map", _f.read(), file_name=def_path_tsc.name, key="dl_default_map_tsc")
@@ -130,6 +123,7 @@ with st.sidebar:
             st.caption("TSC default map not readable.")
     else:
         st.caption("No TSC default map yet.")
+    # Important: only ONE uploader with this key exists in the whole app
     new_map_tsc = st.file_uploader("Upload new TSC vendor map (.xlsx)", type=["xlsx"], key="upl_new_map_tsc")
     if new_map_tsc is not None:
         if st.button("Set as TSC default", key="btn_set_default_tsc"):
@@ -138,95 +132,6 @@ with st.sidebar:
                 _out.write(new_map_tsc.getvalue())
             st.success("Tractor Supply default vendor map updated.")
 
-    # ===== Downloads =====
-    st.header("Downloads")
-
-    # Home Depot
-    with st.expander("Home Depot", expanded=False):
-        if st.session_state.get("hd_zip_bytes"):
-            st.download_button("Download current ZIP (HD)", st.session_state["hd_zip_bytes"], file_name=st.session_state.get("hd_zip_name","vendor_pdfs.zip"), key="dl_zip_sidebar_hd")
-        else:
-            st.caption("Run a Home Depot batch to enable ZIP.")
-        if st.session_state.get("hd_print_pack_bytes"):
-            st.download_button("Download print pack (HD)", st.session_state["hd_print_pack_bytes"], file_name=st.session_state.get("hd_print_pack_name","Print Pack.pdf"), key="dl_printpack_sidebar_hd")
-            inc = st.session_state.get("hd_print_pack_included")
-            if inc:
-                st.caption("Included (HD): " + ", ".join(sorted(set(inc))))
-        else:
-            st.caption("Print Pack will appear here after HD processing.")
-
-    # Lowe's
-    with st.expander("Lowe's", expanded=False):
-        if st.session_state.get("lw_zip_bytes"):
-            st.download_button("Download current ZIP (Lowe's)", st.session_state["lw_zip_bytes"], file_name=st.session_state.get("lw_zip_name","vendor_pdfs.zip"), key="dl_zip_sidebar_lw")
-        else:
-            st.caption("Run a Lowe's batch to enable ZIP.")
-        if st.session_state.get("lw_print_pack_bytes"):
-            st.download_button("Download print pack (Lowe's)", st.session_state["lw_print_pack_bytes"], file_name=st.session_state.get("lw_print_pack_name","Print Pack.pdf"), key="dl_printpack_sidebar_lw")
-            inc2 = st.session_state.get("lw_print_pack_included")
-            if inc2:
-                st.caption("Included (Lowe's): " + ", ".join(sorted(set(inc2))))
-        else:
-            st.caption("Print Pack will appear here after Lowe's processing.")
-
-    # Tractor Supply
-    with st.expander("Tractor Supply", expanded=False):
-        if st.session_state.get("tsc_zip_bytes"):
-            st.download_button("Download current ZIP (TSC)", st.session_state["tsc_zip_bytes"], file_name=st.session_state.get("tsc_zip_name","vendor_pdfs.zip"), key="dl_zip_sidebar_tsc")
-        else:
-            st.caption("Run a Tractor Supply batch to enable ZIP.")
-        if st.session_state.get("tsc_print_pack_bytes"):
-            st.download_button("Download print pack (TSC)", st.session_state["tsc_print_pack_bytes"], file_name=st.session_state.get("tsc_print_pack_name","Print Pack.pdf"), key="dl_printpack_sidebar_tsc")
-            inc3 = st.session_state.get("tsc_print_pack_included")
-            if inc3:
-                st.caption("Included (TSC): " + ", ".join(sorted(set(inc3))))
-        else:
-            st.caption("Print Pack will appear here after Tractor Supply processing.")
-
-    st.markdown("---")
-    st.subheader("Previous Batches")
-    output_root = Path("output")
-    zip_files = sorted(output_root.rglob("*.zip"))
-    if zip_files:
-        labels = [p.name for p in zip_files]
-        sel_idx = st.selectbox("Select a past ZIP", range(len(labels)), format_func=lambda i: labels[i], key="prev_zip_sel_sidebar")
-        chosen = zip_files[sel_idx]
-        with open(chosen, "rb") as f:
-            st.download_button("Download selected ZIP", f.read(), file_name=chosen.name, key="dl_prev_zip_sidebar")
-    else:
-        st.caption("No previous batches yet.")
-
-
-
-st.markdown("---")
-# Tractor Supply map
-st.subheader("Tractor Supply Map")
-def_path_tsc = Path("data")/"vendor_map_tsc.xlsx"
-if def_path_tsc.exists():
-    st.caption(f"Default (TSC): **{def_path_tsc.name}**")
-    try:
-        from datetime import datetime as _dt
-        st.caption("Last updated: " + _dt.fromtimestamp(def_path_tsc.stat().st_mtime).strftime("%Y-%m-%d %H:%M:%S"))
-    except Exception:
-        pass
-    try:
-        with open(def_path_tsc, "rb") as _f:
-            st.download_button("Download TSC default map", _f.read(), file_name=def_path_tsc.name, key="dl_default_map_tsc")
-    except Exception:
-        st.caption("TSC default map not readable.")
-else:
-    st.caption("No TSC default map yet.")
-new_map_tsc = st.file_uploader("Upload new TSC vendor map (.xlsx)", type=["xlsx"], key="upl_new_map_tsc")
-if new_map_tsc is not None:
-    if st.button("Set as TSC default", key="btn_set_default_tsc"):
-        def_path_tsc.parent.mkdir(parents=True, exist_ok=True)
-        with open(def_path_tsc, "wb") as _out:
-            _out.write(new_map_tsc.getvalue())
-        st.success("Tractor Supply default vendor map updated.")
-
-
-st.markdown("---")
-# Tractor Supply map
 # ---- Sidebar: Downloads & history ----
 with st.sidebar:
     st.header("Downloads")
@@ -256,22 +161,20 @@ with st.sidebar:
                 st.caption("Included (Lowe's): " + ", ".join(sorted(set(inc2))))
         else:
             st.caption("Print Pack will appear here after Lowe's processing.")
-    
-# Tractor Supply
-with st.expander("Tractor Supply", expanded=False):
-    if st.session_state.get("tsc_zip_bytes"):
-        st.download_button("Download current ZIP (TSC)", st.session_state["tsc_zip_bytes"], file_name=st.session_state.get("tsc_zip_name","vendor_pdfs.zip"), key="dl_zip_sidebar_tsc")
-    else:
-        st.caption("Run a Tractor Supply batch to enable ZIP.")
-    if st.session_state.get("tsc_print_pack_bytes"):
-        st.download_button("Download print pack (TSC)", st.session_state["tsc_print_pack_bytes"], file_name=st.session_state.get("tsc_print_pack_name","Print Pack.pdf"), key="dl_printpack_sidebar_tsc")
-        inc3 = st.session_state.get("tsc_print_pack_included")
-        if inc3:
-            st.caption("Included (TSC): " + ", ".join(sorted(set(inc3))))
-    else:
-        st.caption("Print Pack will appear here after Tractor Supply processing.")
-
-# History
+    # TSC
+    with st.expander("Tractor Supply", expanded=False):
+        if st.session_state.get("tsc_zip_bytes"):
+            st.download_button("Download current ZIP (TSC)", st.session_state["tsc_zip_bytes"], file_name=st.session_state.get("tsc_zip_name","vendor_pdfs.zip"), key="dl_zip_sidebar_tsc")
+        else:
+            st.caption("Run a Tractor Supply batch to enable ZIP.")
+        if st.session_state.get("tsc_print_pack_bytes"):
+            st.download_button("Download print pack (TSC)", st.session_state["tsc_print_pack_bytes"], file_name=st.session_state.get("tsc_print_pack_name","Print Pack.pdf"), key="dl_printpack_sidebar_tsc")
+            inc3 = st.session_state.get("tsc_print_pack_included")
+            if inc3:
+                st.caption("Included (TSC): " + ", ".join(sorted(set(inc3))))
+        else:
+            st.caption("Print Pack will appear here after Tractor Supply processing.")
+    # History
     st.markdown("---")
     st.subheader("Previous Batches")
     output_root = Path("output")
@@ -548,9 +451,7 @@ with tab_hd:
 with tab_lw:
     run_retailer_panel("Lowe's", lowes_core, "lw", "Lowes")
 
-
-
+# ---- Tractor Supply run panel (below tabs) ----
 st.markdown("---")
 st.markdown("## Tractor Supply")
 run_retailer_panel("Tractor Supply", tsc_core, "tsc", "TSC")
-
