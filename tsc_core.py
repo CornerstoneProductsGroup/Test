@@ -7,56 +7,8 @@ from pathlib import Path
 from vendor_map import normalize_key
 from pypdf import PdfReader, PdfWriter
 
-
-def _same_baseline(w1, w2, tol=4.0):
-    return abs(((w1.get('top',0)+w1.get('bottom',0))/2.0) - ((w2.get('top',0)+w2.get('bottom',0))/2.0)) <= tol
-
-def _find_vendor_pn_column_band(words, x_pad_left=20, x_pad_right=160, below_px=260):
-    """Find the 'Vendor PN' header (two tokens on one baseline or a single token) and
-    return a vertical band below that column. This acts as a robust fallback when the lower label
-    'Vendors (Sellers) Item Number:' isn't reliably tokenized.
-    """
-    lower = [(i, (w.get('text','') or '').strip().lower(), w) for i,w in enumerate(words)]
-    for i, txt, w0 in lower:
-        if txt in ('vendor', 'vendorpn', 'vendor pn'):
-            # case 1: single token 'vendorpn' or 'vendor pn'
-            if txt in ('vendorpn', 'vendor pn'):
-                x0 = w0.get('x0',0) - x_pad_left
-                x1 = w0.get('x1',0) + x_pad_right
-                anchor_bottom = w0.get('bottom',0)
-                band_y1 = anchor_bottom + below_px
-                return (x0, x1, anchor_bottom, band_y1, "Vendor PN")
-            # case 2: look for 'pn' to the right on same baseline
-            baseline = (w0.get('top',0)+w0.get('bottom',0))/2.0
-            nxt = None
-            for _, t2, w2 in lower:
-                if _same_baseline(w0, w2) and w2.get('x0',0) >= w0.get('x1',0) - 2 and (w2.get('x0',0) - w0.get('x1',0)) <= 160:
-                    if t2 == 'pn':
-                        nxt = w2
-                        break
-            if nxt is not None:
-                x0 = min(w0.get('x0',0), nxt.get('x0',0)) - x_pad_left
-                x1 = max(w0.get('x1',0), nxt.get('x1',0)) + x_pad_right
-                anchor_bottom = max(w0.get('bottom',0), nxt.get('bottom',0))
-                band_y1 = anchor_bottom + below_px
-                return (x0, x1, anchor_bottom, band_y1, "Vendor PN")
-    return None
-
-_TEXT_FALLBACK_PAT = re.compile(
-    r"Vendors?\s*\(Sellers?\)\s*Item\s+Num(?:be|ne)r\s*:?\s*([A-Za-z0-9][A-Za-z0-9\-/_.]{0,29})",
-    re.IGNORECASE
-)
-def _regex_text_model(page) -> Optional[str]:
-    try:
-        t = page.extract_text() or ""
-    except Exception:
-        t = ""
-    m = _TEXT_FALLBACK_PAT.search(t.replace('\n', ' '))
-    if m:
-        return m.group(1)
-    return None
-
-SKU_PAT = re.compile(r"[A-Za-z0-9][A-Za-z0-9\-/_\.]{0,29}")
+# Require at least 2 chars, allow -, /, _, .
+SKU_PAT = re.compile(r"[A-Za-z0-9][A-Za-z0-9\-/_.]{1,29}")
 
 @dataclass
 class Candidate:
@@ -70,7 +22,6 @@ def _page_words(page):
     return page.extract_words(extra_attrs=['size']) or []
 
 def _seq_match(words_lower, i, seq_tokens):
-    # return last word obj if sequence matches on same baseline
     w0 = words_lower[i][2]
     baseline = (w0.get('top',0)+w0.get('bottom',0))/2.0
     cur_x = w0.get('x1',0)
@@ -88,8 +39,36 @@ def _seq_match(words_lower, i, seq_tokens):
         last = nxt
     return last
 
-def _find_vendor_itemnum_band(words, x_pad_left=40, x_pad_right=220, below_px=220):
-    # Looks for "Vendors (Sellers) Item Number:" and variants, then captures a vertical band below it
+def _same_baseline(w1, w2, tol=4.0):
+    return abs(((w1.get('top',0)+w1.get('bottom',0))/2.0) - ((w2.get('top',0)+w2.get('bottom',0))/2.0)) <= tol
+
+def _find_vendor_pn_column_band(words, x_pad_left=14, x_pad_right=44, below_px=90):
+    \"\"\"Find the 'Vendor PN' header and return a vertical band below that column.\"\"\"
+    lower = [(i, (w.get('text','') or '').strip().lower(), w) for i,w in enumerate(words)]
+    for i, txt, w0 in lower:
+        if txt in ('vendor', 'vendorpn', 'vendor pn'):
+            if txt in ('vendorpn', 'vendor pn'):
+                x0 = w0.get('x0',0) - x_pad_left
+                x1 = w0.get('x1',0) + x_pad_right
+                anchor_bottom = w0.get('bottom',0)
+                band_y1 = anchor_bottom + below_px
+                return (x0, x1, anchor_bottom, band_y1, "Vendor PN")
+            nxt = None
+            for _, t2, w2 in lower:
+                if _same_baseline(w0, w2) and w2.get('x0',0) >= w0.get('x1',0) - 2 and (w2.get('x0',0) - w0.get('x1',0)) <= 160:
+                    if t2 == 'pn':
+                        nxt = w2
+                        break
+            if nxt is not None:
+                x0 = min(w0.get('x0',0), nxt.get('x0',0)) - x_pad_left
+                x1 = max(w0.get('x1',0), nxt.get('x1',0)) + x_pad_right
+                anchor_bottom = max(w0.get('bottom',0), nxt.get('bottom',0))
+                band_y1 = anchor_bottom + below_px
+                return (x0, x1, anchor_bottom, band_y1, "Vendor PN")
+    return None
+
+def _find_vendor_itemnum_band(words, x_pad_left=18, x_pad_right=48, below_px=100):
+    \"\"\"Looks for 'Vendors (Sellers) Item Number:' (and variants) then captures a tight band below it.\"\"\"
     lower = [(i, (w.get('text','') or '').strip().lower(), w) for i, w in enumerate(words)]
     variants = [
         ["vendors", "(sellers)", "item", "number", ":"],
@@ -115,69 +94,64 @@ def _find_vendor_itemnum_band(words, x_pad_left=40, x_pad_right=220, below_px=22
                     return (x0, x1, anchor_bottom, band_y1, "Vendors (Sellers) Item Number")
     return None
 
+_TEXT_FALLBACK_PAT = re.compile(
+    r"Vendors?\\s*\\(Sellers?\\)\\s*Item\\s+Num(?:be|ne)r\\s*:?\\s*([A-Za-z0-9][A-Za-z0-9\\-/_.]{1,29})",
+    re.IGNORECASE
+)
+
+def _regex_text_model(page) -> Optional[str]:
+    try:
+        t = page.extract_text() or ""
+    except Exception:
+        t = ""
+    m = _TEXT_FALLBACK_PAT.search(t.replace('\\n', ' '))
+    if m:
+        return m.group(1)
+    return None
 
 def _extract_sku_below(words) -> Optional[Candidate]:
-    # Try explicit label band first
     band = _find_vendor_itemnum_band(words)
     label_used = None
     if not band:
-        # Fallback: use the Vendor PN header column
         band = _find_vendor_pn_column_band(words)
         label_used = "Vendor PN"
     else:
-        label_used = band[-1] if isinstance(band, tuple) and len(band) >= 5 else "Vendors (Sellers) Item Number"
+        label_used = "Vendors (Sellers) Item Number"
 
     if band:
         bx0, bx1, ay, by, _lab = band
         below = [w for w in words if ay - 0.5 <= w.get('top',0) <= by and bx0 <= w.get('x0',0) and w.get('x1',0) <= bx1]
         below.sort(key=lambda w: (w.get('top',0.0), w.get('x0',0.0)))
-        for w in below:
+        if not below:
+            return None
+        first_top = below[0].get('top', 0.0)
+        same_line = [w for w in below if abs(w.get('top',0.0) - first_top) <= 2.5]
+        for w in same_line:
             txt = (w.get('text') or '').strip()
             if not txt:
                 continue
             low = txt.lower()
             if low in ('vendors', '(sellers)', 'sellers', 'item', 'number', 'numner', 'no', ':', 'vendor', 'pn', 'vendor pn'):
                 continue
+            # need at least one digit to avoid picking Description words like 'Niban'/'Walnut'
+            if len(txt) < 2 or not any(ch.isdigit() for ch in txt):
+                continue
             m = SKU_PAT.fullmatch(txt) or SKU_PAT.search(txt)
             if m:
                 val = m.group(0)
                 return Candidate(value=val, kind='sku', anchor_text=label_used, anchor_dist=0.0,
                                  bbox=(w.get('x0',0.0), w.get('top',0.0), w.get('x1',0.0), w.get('bottom',0.0)))
-    # Last resort: regex on the page text
-    val = _regex_text_model(getattr(words, '__page__', None)) if False else None  # placeholder, words don't carry page
-    # We can't access page from here; do text fallback in extract_candidates_from_page instead
     return None
-
-    bx0, bx1, ay, by, label = band
-    below = [w for w in words if ay - 0.5 <= w.get('top',0) <= by and bx0 <= w.get('x0',0) and w.get('x1',0) <= bx1]
-    below.sort(key=lambda w: (w.get('top',0.0), w.get('x0',0.0)))
-    for w in below:
-        txt = (w.get('text') or '').strip()
-        if not txt:
-            continue
-        low = txt.lower()
-        if low.startswith("vendors"):
-            # skip repeat of label on the next line
-            continue
-        m = SKU_PAT.fullmatch(txt) or SKU_PAT.search(txt)
-        if m:
-            val = m.group(0)
-            return Candidate(value=val, kind='sku', anchor_text=label, anchor_dist=0.0,
-                             bbox=(w.get('x0',0.0), w.get('top',0.0), w.get('x1',0.0), w.get('bottom',0.0)))
-    return None
-
 
 def extract_candidates_from_page(page) -> List[Candidate]:
     words = _page_words(page)
     c = _extract_sku_below(words)
     if c:
         return [c]
-    # regex fallback on the whole page text
     val = _regex_text_model(page)
     if val:
         return [Candidate(value=val, kind='sku', anchor_text='Vendors (Sellers) Item Number (text)', anchor_dist=0.0, bbox=(0,0,0,0))]
     return []
-
 
 def score_candidate(val: str, vendor_map: Dict[str,str], idx_keys) -> float:
     pattern_score = 0.9
