@@ -445,13 +445,12 @@ def run_retailer_panel(label: str, core_module, state_prefix: str, out_subdir: s
         st.caption("No uncertain pages to review.")
 
 # ---- Tabs ----
-tab_hd, tab_lw = st.tabs(["Home Depot", "Lowe's"])
+tab_hd, tab_lw, tab_tsc = st.tabs(["Home Depot", "Lowe's", "Tractor Supply"])
 with tab_hd:
     run_retailer_panel("Home Depot", split_core, "hd", "HD")
 with tab_lw:
-    run_retailer_panel("Lowe's", lowes_core, "lw", "Lowes")
+    run_retailer_panel(\"Lowe's\", lowes_core, \"lw\", \"Lowes\")
 
+with tab_tsc:
+    run_retailer_panel(\"Tractor Supply\", tsc_core, \"tsc\", \"TSC\")
 # ---- Tractor Supply run panel (below tabs) ----
-st.markdown("---")
-st.markdown("## Tractor Supply")
-run_retailer_panel("Tractor Supply", tsc_core, "tsc", "TSC")
