@@ -449,8 +449,8 @@ tab_hd, tab_lw, tab_tsc = st.tabs(["Home Depot", "Lowe's", "Tractor Supply"])
 with tab_hd:
     run_retailer_panel("Home Depot", split_core, "hd", "HD")
 with tab_lw:
-    run_retailer_panel(\"Lowe's\", lowes_core, \"lw\", \"Lowes\")
+    run_retailer_panel("Lowe's", lowes_core, "lw", "Lowes")
 
 with tab_tsc:
-    run_retailer_panel(\"Tractor Supply\", tsc_core, \"tsc\", \"TSC\")
+    run_retailer_panel("Tractor Supply", tsc_core, "tsc", "TSC")
 # ---- Tractor Supply run panel (below tabs) ----
