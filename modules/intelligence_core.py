@@ -523,8 +523,9 @@ def lifecycle_table(df_all: pd.DataFrame, p: Period, lookback_weeks: int = 8, sc
     out = []
     for key, g in s.groupby(by):
         if len(by) == 1:
-            entity = {"SKU": key}
-            lookup_key = key
+            sku = key[0] if isinstance(key, tuple) else key
+            entity = {"SKU": sku}
+            lookup_key = sku
         else:
             retailer, sku = key
             entity = {"Retailer": retailer, "SKU": sku}
@@ -1865,6 +1866,7 @@ def run_app():
     else:
         st.divider()
         st.subheader("Weekly Detail (Retailer/Vendor x Weeks)")
+        weekly_hist = df_scope[df_scope["WeekEnd"] <= pA.end].copy()
         with st.expander("Advanced settings — Weekly Detail", expanded=False):
             wd1, wd2, wd3, wd4 = st.columns(4)
             with wd1:
@@ -1873,12 +1875,12 @@ def run_app():
                 weekly_metric = st.selectbox("Metric", options=["Sales","Units"], index=0, key="weekly_metric")
             with wd3:
                 weekly_weeks_to_show = st.selectbox("Weeks displayed", options=[4,8,12,26,52], index=2, key="weekly_weeks_to_show")
-            month_periods = available_month_labels(df_all)
+            month_periods = available_month_labels(weekly_hist)
             avg_options = ["4 weeks","8 weeks","12 weeks","26 weeks","52 weeks"] + [month_year_display(p) for p in month_periods]
             default_avg_index = avg_options.index("8 weeks") if "8 weeks" in avg_options else 0
             with wd4:
                 weekly_avg_basis = st.selectbox("Average basis", options=avg_options, index=default_avg_index, key="weekly_avg_basis")
-        d = dfA.copy(); d = d[(d["Sales"] >= min_sales) | (d["Units"] >= min_units)].copy()
+        d = weekly_hist.copy(); d = d[(d["Sales"] >= min_sales) | (d["Units"] >= min_units)].copy()
         if d.empty: st.caption("No rows match the current thresholds.")
         else:
             metric_col = "Sales" if weekly_metric == "Sales" else "Units"
@@ -1892,13 +1894,15 @@ def run_app():
             week_cols = [c for c in piv.columns if c not in [pivot_dim, "Δ vs prior week", "Average Value", "Current vs Avg"]]
 
             fmt_value = (lambda v: money(float(v))) if metric_col == "Sales" else (lambda v: f"{float(v):,.0f}")
-            sty = piv.style
-            sty = sty.format({c: fmt_value for c in week_cols + ["Average Value"] if c in piv.columns})
-            sty = sty.format({"Δ vs prior week": fmt_value, "Current vs Avg": fmt_value})
+            piv_disp = piv.copy()
+            for c in week_cols + ["Average Value", "Δ vs prior week", "Current vs Avg"]:
+                if c in piv_disp.columns:
+                    piv_disp[c] = pd.to_numeric(piv_disp[c], errors="coerce").fillna(0.0)
+                    piv_disp[c] = piv_disp[c].map(fmt_value)
 
-            def _posneg(v):
+            def _posneg_str(v):
                 try:
-                    x = float(v)
+                    x = float(str(v).replace('$','').replace(',',''))
                 except Exception:
                     return ""
                 if x > 0:
@@ -1907,10 +1911,11 @@ def run_app():
                     return "color:#c62828; font-weight:700;"
                 return ""
 
+            sty = piv_disp.style
             for c in ["Δ vs prior week", "Current vs Avg"]:
-                if c in piv.columns:
-                    sty = sty.applymap(_posneg, subset=[c])
-            st.dataframe(sty, use_container_width=True, hide_index=True, height=_table_height(piv, max_px=650))
+                if c in piv_disp.columns:
+                    sty = sty.applymap(_posneg_str, subset=[c])
+            st.dataframe(sty, use_container_width=True, hide_index=True, height=_table_height(piv_disp, max_px=650))
 
         # original standard view sections
         st.subheader("New Activity")
