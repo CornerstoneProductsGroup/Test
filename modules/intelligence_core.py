@@ -810,13 +810,14 @@ def count_sales_card(label: str, count_value: int, sales_value: float, color: st
         sales_txt = "+" + sales_txt
     elif signed_sales and sales_value < 0:
         sales_txt = "-" + sales_txt
-    pct_inline = "" if pd.isna(pct) else f'<span style="margin-left:8px; color:{color}; font-weight:700;">({pct_fmt(pct)})</span>'
+    pct_html = "" if pd.isna(pct) else f'<div class="kpi-delta" style="color:{color}">({pct_fmt(pct)})</div>'
     st.markdown(
         f"""
         <div class="kpi-card">
             <div class="kpi-title">{label}</div>
             <div class="kpi-value" style="color:{color}">{count_value:,}</div>
-            <div class="kpi-sub" style="color:{color}">Sales: {sales_txt}{pct_inline}</div>
+            <div class="kpi-sub" style="color:{color}">Sales: {sales_txt}</div>
+            {pct_html}
         </div>
         """,
         unsafe_allow_html=True,
@@ -1616,38 +1617,35 @@ def run_app():
     
     if analysis_view == "Month / Year Compare":
         st.subheader("Current Only / Compare Only Activity")
-        fe_cur = first_sale_ever(df_hist_for_new, pA)
-        fe_cmp = first_sale_ever(df_hist_for_new, pB) if pB is not None else pd.DataFrame()
-        pl_cur = new_placement(df_hist_for_new, pA)
-        pl_cmp = new_placement(df_hist_for_new, pB) if pB is not None else pd.DataFrame()
-        cur_s = dfA.groupby("SKU", as_index=False).agg(Current_Sales=("Sales","sum"))
-        cmp_s = dfB.groupby("SKU", as_index=False).agg(Compare_Sales=("Sales","sum"))
+        cur_s = dfA.groupby("SKU", as_index=False).agg(Current_Units=("Units", "sum"), Current_Sales=("Sales", "sum"))
+        cmp_s = dfB.groupby("SKU", as_index=False).agg(Compare_Units=("Units", "sum"), Compare_Sales=("Sales", "sum")) if pB is not None else pd.DataFrame(columns=["SKU", "Compare_Units", "Compare_Sales"])
+
         lost = cmp_s.merge(cur_s, on="SKU", how="left").fillna(0.0)
-        lost = lost[(lost["Compare_Sales"] > 0) & (lost["Current_Sales"] <= 0)].copy().sort_values("Compare_Sales", ascending=False)
-    
+        lost = lost[(lost["Compare_Sales"] > 0) & (lost["Current_Sales"] <= 0)].copy().sort_values(["Compare_Sales", "Compare_Units"], ascending=[False, False])
+
+        new_act = cur_s.merge(cmp_s, on="SKU", how="left").fillna(0.0)
+        new_act = new_act[(new_act["Current_Sales"] > 0) & (new_act["Compare_Sales"] <= 0)].copy().sort_values(["Current_Sales", "Current_Units"], ascending=[False, False])
+
         a1, a2 = st.columns(2)
         with a1:
-            st.markdown(f"**First Ever Sales — {a_lbl}**")
-            if fe_cur.empty: st.caption("None.")
-            else: render_df(fe_cur[["SKU","FirstWeek","FirstRetailer","FirstVendor"]].rename(columns={"FirstWeek":"First Week","FirstRetailer":"Retailer","FirstVendor":"Vendor"}), height=240)
-            st.markdown(f"**New Placements — {a_lbl}**")
-            if pl_cur.empty: st.caption("None.")
-            else: render_df(pl_cur[["SKU","Retailer","FirstWeek","Vendor"]].rename(columns={"FirstWeek":"First Week"}), height=240)
+            st.markdown("**Lost Activity — sold in compare, zero in current**")
+            if lost.empty:
+                st.caption("None.")
+            else:
+                show_lost = lost[["SKU", "Compare_Units", "Compare_Sales"]].rename(columns={"Compare_Units": "Units", "Compare_Sales": "Sales"}).copy()
+                show_lost["Units"] = show_lost["Units"].map(lambda v: f"{float(v):,.0f}")
+                show_lost["Sales"] = show_lost["Sales"].map(money)
+                render_df(show_lost, height=320)
         with a2:
-            st.markdown(f"**First Ever Sales — {b_lbl}**")
-            if fe_cmp.empty: st.caption("None.")
-            else: render_df(fe_cmp[["SKU","FirstWeek","FirstRetailer","FirstVendor"]].rename(columns={"FirstWeek":"First Week","FirstRetailer":"Retailer","FirstVendor":"Vendor"}), height=240)
-            st.markdown(f"**New Placements — {b_lbl}**")
-            if pl_cmp.empty: st.caption("None.")
-            else: render_df(pl_cmp[["SKU","Retailer","FirstWeek","Vendor"]].rename(columns={"FirstWeek":"First Week"}), height=240)
-    
-        st.markdown("**Lost Activity — sold in compare, zero in current**")
-        if lost.empty: st.caption("None.")
-        else:
-            show_lost = lost[["SKU","Compare_Sales"]].rename(columns={"Compare_Sales":"Compare Sales"}).copy()
-            show_lost["Compare Sales"] = show_lost["Compare Sales"].map(money)
-            render_df(show_lost, height=280)
-    
+            st.markdown("**New Activity — sold in current, zero in compare**")
+            if new_act.empty:
+                st.caption("None.")
+            else:
+                show_new = new_act[["SKU", "Current_Units", "Current_Sales"]].rename(columns={"Current_Units": "Units", "Current_Sales": "Sales"}).copy()
+                show_new["Units"] = show_new["Units"].map(lambda v: f"{float(v):,.0f}")
+                show_new["Sales"] = show_new["Sales"].map(money)
+                render_df(show_new, height=320)
+
         st.divider()
         st.subheader("Comparison Detail")
         pivot_dim = st.selectbox("Compare rows by", options=["Retailer","Vendor"], index=0, key="multi_compare_dim")
