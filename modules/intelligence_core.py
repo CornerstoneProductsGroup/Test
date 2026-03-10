@@ -493,77 +493,94 @@ def reactivated(df_all: pd.DataFrame, p: Period, dormant_weeks: int = 8) -> pd.D
             out.append({"SKU": sku, "ReactivatedWeek": first_cur, "DormantWeeks": gap_weeks})
     return pd.DataFrame(out).sort_values("ReactivatedWeek") if out else pd.DataFrame(columns=["SKU","ReactivatedWeek","DormantWeeks"])
 
-def lifecycle_table(df_all: pd.DataFrame, p: Period, lookback_weeks: int = 8) -> pd.DataFrame:
-    # Stage per SKU using full history but relative to current period.
-    s = weekly_series(df_all, ["SKU"])
+def lifecycle_table(df_all: pd.DataFrame, p: Period, lookback_weeks: int = 8, scope: str = "SKU (All Retailers)") -> pd.DataFrame:
+    """Lifecycle stage for SKUs overall or retailer-specific."""
+    by = ["SKU"] if scope == "SKU (All Retailers)" else ["Retailer", "SKU"]
+    s = weekly_series(df_all, by)
+    base_cols = (["Retailer", "SKU"] if len(by) == 2 else ["SKU"]) + [
+        "Stage", "Trend", "Sales (lookback)", "Units (lookback)",
+        "Last Week Sales", "WoW Sales Δ", "Weeks Up", "Weeks Down", "Weeks With Sales"
+    ]
     if s.empty:
-        return pd.DataFrame(columns=["SKU","Stage","Momentum","Sales (lookback)"])
-    # universe and anchor = period end
+        return pd.DataFrame(columns=base_cols)
+
     anchor = p.end
-    lb_start = anchor - pd.Timedelta(days=(7*lookback_weeks - 1))
-    out=[]
-    first_week = df_all[df_all["Sales"] > 0].groupby("SKU")["WeekEnd"].min()
-    last_week = df_all[df_all["Sales"] > 0].groupby("SKU")["WeekEnd"].max()
+    lb_start = anchor - pd.Timedelta(days=(7 * lookback_weeks - 1))
+    full_hist = df_all[df_all["Sales"] > 0].copy()
+    first_week = full_hist.groupby(by)["WeekEnd"].min() if not full_hist.empty else pd.Series(dtype="datetime64[ns]")
+    last_week = full_hist.groupby(by)["WeekEnd"].max() if not full_hist.empty else pd.Series(dtype="datetime64[ns]")
 
-    # placements
-    fr = df_all[df_all["Sales"] > 0].groupby(["SKU","Retailer"])["WeekEnd"].min().reset_index().rename(columns={"WeekEnd":"FirstWeekRetailer"})
+    out = []
+    for key, g in s.groupby(by):
+        if len(by) == 1:
+            entity = {"SKU": key}
+            lookup_key = key
+        else:
+            retailer, sku = key
+            entity = {"Retailer": retailer, "SKU": sku}
+            lookup_key = key
 
-    for sku, g in s.groupby("SKU"):
         g = g.sort_values("WeekEnd")
-        # window
         gw = g[(g["WeekEnd"] >= lb_start) & (g["WeekEnd"] <= anchor)].copy()
-        mom = momentum_score(gw["Sales"]) if not gw.empty else 0.0
         sales_lb = float(gw["Sales"].sum()) if not gw.empty else 0.0
         units_lb = float(gw["Units"].sum()) if (not gw.empty and "Units" in gw.columns) else 0.0
-
-        fw = first_week.get(sku, pd.NaT)
-        lw = last_week.get(sku, pd.NaT)
-
-        stage = "Mature"
-        trend = "Flat"
-        slope = 0.0
-        weeks_up = 0
-        weeks_down = 0
         last_w_sales = float(gw["Sales"].iloc[-1]) if len(gw) >= 1 else 0.0
         prev_w_sales = float(gw["Sales"].iloc[-2]) if len(gw) >= 2 else 0.0
         wow_sales = last_w_sales - prev_w_sales if len(gw) >= 2 else np.nan
-        # Launch: first sale ever in current period
+        weeks_with_sales = int((pd.to_numeric(gw.get("Sales", 0.0), errors="coerce").fillna(0.0) > 0).sum()) if not gw.empty else 0
+
+        fw = first_week.get(lookup_key, pd.NaT)
+        lw = last_week.get(lookup_key, pd.NaT)
+
+        trend_symbol = "→"
+        weeks_up = 0
+        weeks_down = 0
+        stage = "Mature"
+
         if pd.notna(fw) and (fw >= p.start) and (fw <= p.end):
             stage = "Launch"
+            trend_symbol = "↗"
+        elif pd.isna(lw):
+            stage = "Inactive 12+ Weeks"
+            trend_symbol = "↓"
         else:
-            # Dormant: no sale in lookback window
-            if pd.isna(lw) or lw < lb_start:
+            weeks_since_sale = int((anchor.normalize() - pd.to_datetime(lw).normalize()).days // 7)
+            if weeks_since_sale >= 12:
+                stage = "Inactive 12+ Weeks"
+                trend_symbol = "↓"
+            elif weeks_with_sales == 0:
                 stage = "Dormant"
+                trend_symbol = "→"
             else:
-                # Growth/Decline based on trend classification in lookback
-                if not gw.empty:
-                    trend, slope, wu, wd = classify_trend(gw["Sales"], min_weeks=min(lookback_weeks, len(gw)))
-                    weeks_up, weeks_down = int(wu), int(wd)
-                    if trend == "Increasing":
-                        stage = "Growth"
-                    elif trend == "Declining":
-                        stage = "Decline"
-                    else:
-                        stage = "Mature"
+                trend_label, slope, wu, wd = classify_trend(gw["Sales"], min_weeks=min(lookback_weeks, max(2, len(gw))))
+                weeks_up, weeks_down = int(wu), int(wd)
+                if trend_label == "Increasing":
+                    stage = "Growth"
+                    trend_symbol = "↗"
+                elif trend_label == "Declining":
+                    stage = "Decline"
+                    trend_symbol = "↘"
+                else:
+                    stage = "Mature" if weeks_with_sales >= max(2, lookback_weeks // 2) else "Dormant"
+                    trend_symbol = "→"
 
         out.append({
-            "SKU": sku,
+            **entity,
             "Stage": stage,
-            "Trend": trend,
-            "Momentum": mom,
+            "Trend": trend_symbol,
             "Sales (lookback)": sales_lb,
             "Units (lookback)": units_lb,
-            "First Sale": fw,
-            "Last Sale": lw,
-            "Slope": float(slope),
+            "Last Week Sales": last_w_sales,
+            "WoW Sales Δ": float(wow_sales) if not pd.isna(wow_sales) else np.nan,
             "Weeks Up": int(weeks_up),
             "Weeks Down": int(weeks_down),
-            "Last Week Sales": float(last_w_sales),
-            "WoW Sales Δ": float(wow_sales) if not pd.isna(wow_sales) else np.nan,
+            "Weeks With Sales": int(weeks_with_sales),
         })
     out_df = pd.DataFrame(out)
     if not out_df.empty:
-        out_df = out_df.sort_values(["Stage","Momentum","Sales (lookback)"], ascending=[True, False, False])
+        stage_order = {"Launch": 0, "Growth": 1, "Mature": 2, "Decline": 3, "Dormant": 4, "Inactive 12+ Weeks": 5}
+        out_df["__stage_order"] = out_df["Stage"].map(stage_order).fillna(99)
+        out_df = out_df.sort_values(["__stage_order", "Sales (lookback)"], ascending=[True, False]).drop(columns=["__stage_order"])
     return out_df
 
 # -----------------------------
@@ -1751,62 +1768,6 @@ def run_app():
         comp["Units"] = comp["Units"].map(lambda v: f"{float(v):,.0f}")
         render_df(comp, height=360)
     else:
-        # original standard view sections
-        st.subheader("New Activity")
-        a,b = st.columns(2)
-        with a:
-            st.markdown("**First Sale Ever (Launches)**")
-            if first_ever.empty:
-                st.caption("None in this period.")
-            else:
-                fe = first_ever.copy()
-                fe["FirstWeek"] = fe["FirstWeek"].dt.date.astype(str)
-                render_df(fe.rename(columns={"FirstWeek":"First Week"})[["SKU","First Week","FirstRetailer","FirstVendor"]], height=260)
-        with b:
-            st.markdown("**New Retailer Placements**")
-            if placements.empty:
-                st.caption("None in this period.")
-            else:
-                pl = placements.copy()
-                pl["FirstWeek"] = pl["FirstWeek"].dt.date.astype(str)
-                render_df(pl.rename(columns={"FirstWeek":"First Week"})[["SKU","Retailer","Vendor","First Week"]], height=260)
-        st.markdown("**New Item Tracker (track launches + placements over the next N weeks)**")
-        track_weeks = st.slider("Tracking window (weeks)", min_value=4, max_value=13, value=8, step=1)
-        def _track_rows() -> pd.DataFrame:
-            rows = []
-            horizon_end_days = 7 * track_weeks - 1
-            if not first_ever.empty:
-                for _, r in first_ever.iterrows():
-                    sku = r["SKU"]
-                    fw = pd.to_datetime(r["FirstWeek"], errors="coerce")
-                    if pd.isna(fw): continue
-                    end = fw + pd.Timedelta(days=horizon_end_days)
-                    d = df_hist_for_new[(df_hist_for_new["SKU"]==sku) & (df_hist_for_new["WeekEnd"]>=fw) & (df_hist_for_new["WeekEnd"]<=end)].copy()
-                    if d.empty: continue
-                    wk = d.groupby("WeekEnd", as_index=False).agg(Sales=("Sales","sum"), Units=("Units","sum")).sort_values("WeekEnd")
-                    total_sales = float(wk["Sales"].sum()); total_units = float(wk["Units"].sum())
-                    last_sales = float(wk["Sales"].iloc[-1]); prev_sales = float(wk["Sales"].iloc[-2]) if len(wk)>=2 else 0.0
-                    rows.append({"Type":"Launch","SKU":sku,"Start Week":fw.date().isoformat(),"Weeks Tracked":int(len(wk)),"Total Sales":total_sales,"Total Units":total_units,"Last Week Sales":last_sales,"WoW Sales Δ":(last_sales - prev_sales) if len(wk)>=2 else np.nan})
-            if not placements.empty:
-                for _, r in placements.iterrows():
-                    sku = r["SKU"]; ret = r["Retailer"]; fw = pd.to_datetime(r["FirstWeek"], errors="coerce")
-                    if pd.isna(fw): continue
-                    end = fw + pd.Timedelta(days=horizon_end_days)
-                    d = df_hist_for_new[(df_hist_for_new["SKU"]==sku) & (df_hist_for_new["Retailer"]==ret) & (df_hist_for_new["WeekEnd"]>=fw) & (df_hist_for_new["WeekEnd"]<=end)].copy()
-                    if d.empty: continue
-                    wk = d.groupby("WeekEnd", as_index=False).agg(Sales=("Sales","sum"), Units=("Units","sum")).sort_values("WeekEnd")
-                    total_sales = float(wk["Sales"].sum()); total_units = float(wk["Units"].sum())
-                    last_sales = float(wk["Sales"].iloc[-1]); prev_sales = float(wk["Sales"].iloc[-2]) if len(wk)>=2 else 0.0
-                    rows.append({"Type":"Placement","SKU":sku,"Retailer":ret,"Start Week":fw.date().isoformat(),"Weeks Tracked":int(len(wk)),"Total Sales":total_sales,"Total Units":total_units,"Last Week Sales":last_sales,"WoW Sales Δ":(last_sales - prev_sales) if len(wk)>=2 else np.nan})
-            if not rows: return pd.DataFrame(columns=["Type","SKU","Retailer","Start Week","Weeks Tracked","Total Sales","Total Units","Last Week Sales","WoW Sales Δ"])
-            return pd.DataFrame(rows)
-        tracker = _track_rows()
-        if tracker.empty: st.caption("No new items to track in the selected period.")
-        else:
-            show = tracker.copy()
-            for c in ["Total Sales","Last Week Sales","WoW Sales Δ"]: show[c] = show[c].map(lambda v: "" if pd.isna(v) else money(float(v)))
-            show["Total Units"] = show["Total Units"].map(lambda v: f"{float(v):,.0f}")
-            render_df(show.sort_values(["Type","Start Week","SKU"], ascending=[True, False, True]), height=320)
         st.divider()
         st.subheader("Weekly Detail (Retailer/Vendor x Weeks)")
         with st.expander("Advanced settings — Weekly Detail", expanded=False):
@@ -1877,6 +1838,63 @@ def run_app():
                 if c in show.columns:
                     show[c] = pd.to_numeric(show[c], errors="coerce").fillna(0.0).map(_fmt_diff)
             st.markdown(show.to_html(escape=False, index=False, classes='report-table'), unsafe_allow_html=True)
+
+        # original standard view sections
+        st.subheader("New Activity")
+        a,b = st.columns(2)
+        with a:
+            st.markdown("**First Sale Ever (Launches)**")
+            if first_ever.empty:
+                st.caption("None in this period.")
+            else:
+                fe = first_ever.copy()
+                fe["FirstWeek"] = fe["FirstWeek"].dt.date.astype(str)
+                render_df(fe.rename(columns={"FirstWeek":"First Week"})[["SKU","First Week","FirstRetailer","FirstVendor"]], height=260)
+        with b:
+            st.markdown("**New Retailer Placements**")
+            if placements.empty:
+                st.caption("None in this period.")
+            else:
+                pl = placements.copy()
+                pl["FirstWeek"] = pl["FirstWeek"].dt.date.astype(str)
+                render_df(pl.rename(columns={"FirstWeek":"First Week"})[["SKU","Retailer","Vendor","First Week"]], height=260)
+        st.markdown("**New Item Tracker (track launches + placements over the next N weeks)**")
+        track_weeks = st.slider("Tracking window (weeks)", min_value=4, max_value=13, value=8, step=1)
+        def _track_rows() -> pd.DataFrame:
+            rows = []
+            horizon_end_days = 7 * track_weeks - 1
+            if not first_ever.empty:
+                for _, r in first_ever.iterrows():
+                    sku = r["SKU"]
+                    fw = pd.to_datetime(r["FirstWeek"], errors="coerce")
+                    if pd.isna(fw): continue
+                    end = fw + pd.Timedelta(days=horizon_end_days)
+                    d = df_hist_for_new[(df_hist_for_new["SKU"]==sku) & (df_hist_for_new["WeekEnd"]>=fw) & (df_hist_for_new["WeekEnd"]<=end)].copy()
+                    if d.empty: continue
+                    wk = d.groupby("WeekEnd", as_index=False).agg(Sales=("Sales","sum"), Units=("Units","sum")).sort_values("WeekEnd")
+                    total_sales = float(wk["Sales"].sum()); total_units = float(wk["Units"].sum())
+                    last_sales = float(wk["Sales"].iloc[-1]); prev_sales = float(wk["Sales"].iloc[-2]) if len(wk)>=2 else 0.0
+                    rows.append({"Type":"Launch","SKU":sku,"Start Week":fw.date().isoformat(),"Weeks Tracked":int(len(wk)),"Total Sales":total_sales,"Total Units":total_units,"Last Week Sales":last_sales,"WoW Sales Δ":(last_sales - prev_sales) if len(wk)>=2 else np.nan})
+            if not placements.empty:
+                for _, r in placements.iterrows():
+                    sku = r["SKU"]; ret = r["Retailer"]; fw = pd.to_datetime(r["FirstWeek"], errors="coerce")
+                    if pd.isna(fw): continue
+                    end = fw + pd.Timedelta(days=horizon_end_days)
+                    d = df_hist_for_new[(df_hist_for_new["SKU"]==sku) & (df_hist_for_new["Retailer"]==ret) & (df_hist_for_new["WeekEnd"]>=fw) & (df_hist_for_new["WeekEnd"]<=end)].copy()
+                    if d.empty: continue
+                    wk = d.groupby("WeekEnd", as_index=False).agg(Sales=("Sales","sum"), Units=("Units","sum")).sort_values("WeekEnd")
+                    total_sales = float(wk["Sales"].sum()); total_units = float(wk["Units"].sum())
+                    last_sales = float(wk["Sales"].iloc[-1]); prev_sales = float(wk["Sales"].iloc[-2]) if len(wk)>=2 else 0.0
+                    rows.append({"Type":"Placement","SKU":sku,"Retailer":ret,"Start Week":fw.date().isoformat(),"Weeks Tracked":int(len(wk)),"Total Sales":total_sales,"Total Units":total_units,"Last Week Sales":last_sales,"WoW Sales Δ":(last_sales - prev_sales) if len(wk)>=2 else np.nan})
+            if not rows: return pd.DataFrame(columns=["Type","SKU","Retailer","Start Week","Weeks Tracked","Total Sales","Total Units","Last Week Sales","WoW Sales Δ"])
+            return pd.DataFrame(rows)
+        tracker = _track_rows()
+        if tracker.empty: st.caption("No new items to track in the selected period.")
+        else:
+            show = tracker.copy()
+            for c in ["Total Sales","Last Week Sales","WoW Sales Δ"]: show[c] = show[c].map(lambda v: "" if pd.isna(v) else money(float(v)))
+            show["Total Units"] = show["Total Units"].map(lambda v: f"{float(v):,.0f}")
+            render_df(show.sort_values(["Type","Start Week","SKU"], ascending=[True, False, True]), height=320)
         st.subheader("Movers & Trend Leaders")
         if compare_mode == "None": st.info("Select a comparison mode to compute increasing/declining vs the compare period.")
         else:
@@ -2000,44 +2018,44 @@ def run_app():
                         render_df(lvl3_disp[["SKU", sales_a_col, sales_b_col, "Sales_Δ", "Contribution_%"]], height=240)
         st.subheader("2) SKU Lifecycle (Launch → Growth → Mature → Decline → Dormant)")
         life_df_src = df_hist_for_new if show_full_history_lifecycle else df_scope
-        life = lifecycle_table(life_df_src, pA, lookback_weeks=8)
+        lc1, lc2, lc3 = st.columns([1.25, 1, 1])
+        with lc1:
+            lifecycle_scope = st.selectbox("Lifecycle scope", options=["SKU (All Retailers)", "SKU by Retailer"], index=0, key="lifecycle_scope")
+        with lc2:
+            lifecycle_lookback = st.selectbox("Lookback weeks", options=[4, 6, 8, 12, 26, 52], index=2, key="lifecycle_lookback")
+        stage_options = ["Launch", "Growth", "Mature", "Decline", "Dormant", "Inactive 12+ Weeks"]
+        with lc3:
+            lifecycle_stage_filter = st.multiselect("Stages", options=stage_options, default=stage_options, key="lifecycle_stage_filter")
+
+        life = lifecycle_table(life_df_src, pA, lookback_weeks=int(lifecycle_lookback), scope=lifecycle_scope)
         if life.empty:
             st.caption("Not enough data to compute lifecycle.")
         else:
-            # small stage summary
-            stage_counts = life["Stage"].value_counts().reset_index()
-            stage_counts.columns = ["Stage","Count"]
-            left,right = st.columns([1,2])
-            with left:
-                st.markdown("**Stage Summary**")
-                render_df(stage_counts, height=220)
-            with right:
-                st.markdown("**Lifecycle Detail (trend + momentum + recent change)**")
-                life_show = life.copy()
-                if min_sales > 0:
-                    life_show = life_show[life_show["Sales (lookback)"] >= min_sales].copy()
-    
-                # Pretty formatting
+            life_show = life.copy()
+            if lifecycle_stage_filter:
+                life_show = life_show[life_show["Stage"].isin(lifecycle_stage_filter)].copy()
+            if min_sales > 0:
+                life_show = life_show[life_show["Sales (lookback)"] >= min_sales].copy()
+
+            stage_counts = life_show["Stage"].value_counts().reindex(stage_options, fill_value=0).reset_index()
+            stage_counts.columns = ["Stage", "Count"]
+            st.markdown("**Stage Summary**")
+            render_df(stage_counts, height=220)
+
+            st.markdown("**Lifecycle Detail**")
+            if life_show.empty:
+                st.caption("No lifecycle rows match the current stage/threshold filters.")
+            else:
                 life_show["Sales (lookback)"] = life_show["Sales (lookback)"].map(money)
                 life_show["Units (lookback)"] = life_show["Units (lookback)"].map(lambda v: f"{v:,.0f}")
                 life_show["Last Week Sales"] = life_show["Last Week Sales"].map(money)
                 life_show["WoW Sales Δ"] = life_show["WoW Sales Δ"].map(lambda v: "" if pd.isna(v) else money(v))
-                life_show["Slope"] = life_show["Slope"].map(lambda v: f"{v:,.2f}") if "Slope" in life_show.columns else life_show.get("Slope")
-                for dc in ["First Sale","Last Sale"]:
-                    if dc in life_show.columns:
-                        life_show[dc] = pd.to_datetime(life_show[dc], errors="coerce").dt.date.astype(str)
-    
-                cols = [
-                    "SKU","Stage","Trend","Momentum",
-                    "Sales (lookback)","Units (lookback)",
-                    "Last Week Sales","WoW Sales Δ",
-                    "Slope","Weeks Up","Weeks Down","First Sale","Last Sale",
-                ]
+                cols = ["Retailer", "SKU", "Stage", "Trend", "Sales (lookback)", "Units (lookback)", "Last Week Sales", "WoW Sales Δ", "Weeks Up", "Weeks Down", "Weeks With Sales"]
                 cols = [c for c in cols if c in life_show.columns]
-                render_df(life_show[cols].head(60), height=520)
-    
+                render_df(life_show[cols].head(200), height=520)
+
         st.divider()
-    
+
         # C) Opportunity Detector
         st.subheader("3) Opportunity Detector (Find expansion + gaps)")
         if compare_mode == "None":
