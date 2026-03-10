@@ -909,6 +909,76 @@ def render_df(df: pd.DataFrame, height: int = 320):
     st.dataframe(df, use_container_width=True, height=height, hide_index=True)
 
 
+@st.cache_data(show_spinner=False)
+def build_weekly_detail_table_cached(
+    d_in: pd.DataFrame,
+    pivot_dim: str,
+    metric_col: str,
+    weeks_to_show: int,
+    avg_basis: str,
+) -> pd.DataFrame:
+    """Build the weekly detail table with independent display + average windows.
+
+    Cached so the Standard Intelligence tab feels much faster when changing other controls.
+    """
+    d = d_in.copy()
+    if d.empty or pivot_dim not in d.columns or metric_col not in d.columns:
+        return pd.DataFrame(columns=[pivot_dim, "Δ vs prior week", "Average Value", "Current vs Avg"])
+
+    d["WeekEnd"] = pd.to_datetime(d["WeekEnd"], errors="coerce")
+    d = d[d["WeekEnd"].notna()].copy()
+    if d.empty:
+        return pd.DataFrame(columns=[pivot_dim, "Δ vs prior week", "Average Value", "Current vs Avg"])
+
+    all_weeks = sorted(pd.to_datetime(d["WeekEnd"].dropna().unique()).tolist())
+    if not all_weeks:
+        return pd.DataFrame(columns=[pivot_dim, "Δ vs prior week", "Average Value", "Current vs Avg"])
+
+    weeks_to_show = int(max(1, weeks_to_show))
+    display_weeks = all_weeks[-weeks_to_show:]
+
+    wk_vals = d.groupby([pivot_dim, "WeekEnd"], as_index=False).agg(Value=(metric_col, "sum"))
+    wk_vals = wk_vals[wk_vals["WeekEnd"].isin(display_weeks)].copy()
+    wk_vals["Week"] = wk_vals["WeekEnd"].dt.strftime("%Y-%m-%d")
+    piv = wk_vals.pivot_table(index=pivot_dim, columns="Week", values="Value", aggfunc="sum", fill_value=0.0)
+    piv = piv.reindex(sorted(piv.index.tolist()))
+
+    avg_source = d.groupby([pivot_dim, "WeekEnd"], as_index=False).agg(Value=(metric_col, "sum"))
+    avg_source["WeekEnd"] = pd.to_datetime(avg_source["WeekEnd"], errors="coerce")
+
+    avg_weeks = []
+    if isinstance(avg_basis, str) and avg_basis.endswith("weeks"):
+        try:
+            avg_n = int(str(avg_basis).split()[0])
+        except Exception:
+            avg_n = 8
+        avg_weeks = all_weeks[-avg_n:]
+    else:
+        avg_period = _display_to_period(avg_basis)
+        avg_source = avg_source[avg_source["WeekEnd"].dt.to_period("M").astype(str) == str(avg_period)].copy()
+        avg_weeks = sorted(pd.to_datetime(avg_source["WeekEnd"].dropna().unique()).tolist())
+
+    if avg_weeks:
+        avg_source = avg_source[avg_source["WeekEnd"].isin(avg_weeks)].copy()
+        avg_tbl = avg_source.groupby(pivot_dim, as_index=False).agg(**{"Average Value": ("Value", "mean")})
+    else:
+        avg_tbl = pd.DataFrame(columns=[pivot_dim, "Average Value"])
+
+    out = piv.reset_index().merge(avg_tbl, on=pivot_dim, how="left")
+    out["Average Value"] = pd.to_numeric(out["Average Value"], errors="coerce").fillna(0.0)
+
+    last_key = display_weeks[-1].strftime("%Y-%m-%d") if display_weeks else None
+    prev_key = display_weeks[-2].strftime("%Y-%m-%d") if len(display_weeks) >= 2 else None
+    last_vals = pd.to_numeric(out.get(last_key, 0.0), errors="coerce").fillna(0.0) if last_key else 0.0
+    prev_vals = pd.to_numeric(out.get(prev_key, 0.0), errors="coerce").fillna(0.0) if prev_key else 0.0
+    out["Δ vs prior week"] = last_vals - prev_vals
+    out["Current vs Avg"] = last_vals - out["Average Value"]
+
+    ordered_cols = [pivot_dim] + [w.strftime("%Y-%m-%d") for w in display_weeks] + ["Δ vs prior week", "Average Value", "Current vs Avg"]
+    out = out[[c for c in ordered_cols if c in out.columns]].copy()
+    return out
+
+
 def render_data_management_center(vm: pd.DataFrame, store: pd.DataFrame):
     st.subheader("Data Management Center")
     st.caption("Manage CSV backup/restore, ingest new workbooks, and review coverage by year.")
@@ -1802,57 +1872,35 @@ def run_app():
         if d.empty: st.caption("No rows match the current thresholds.")
         else:
             metric_col = "Sales" if weekly_metric == "Sales" else "Units"
-            wk_vals = d.groupby([pivot_dim,"WeekEnd"], as_index=False).agg(Value=(metric_col,"sum"))
-            wk_vals["WeekEnd"] = pd.to_datetime(wk_vals["WeekEnd"], errors="coerce")
-            week_list = sorted([pd.to_datetime(x) for x in wk_vals["WeekEnd"].dropna().unique().tolist()])
-            if weekly_weeks_to_show and len(week_list) > weekly_weeks_to_show:
-                week_list = week_list[-int(weekly_weeks_to_show):]
-            wk_vals = wk_vals[wk_vals["WeekEnd"].isin(week_list)].copy()
-            wk_vals["Week"] = wk_vals["WeekEnd"].dt.date.astype(str)
-            piv = wk_vals.pivot_table(index=pivot_dim, columns="Week", values="Value", aggfunc="sum", fill_value=0.0)
-            piv = piv.reindex(sorted(piv.index.tolist()))
+            piv = build_weekly_detail_table_cached(
+                d[[c for c in [pivot_dim, "WeekEnd", "Sales", "Units"] if c in d.columns]].copy(),
+                pivot_dim=pivot_dim,
+                metric_col=metric_col,
+                weeks_to_show=int(weekly_weeks_to_show),
+                avg_basis=weekly_avg_basis,
+            )
+            week_cols = [c for c in piv.columns if c not in [pivot_dim, "Δ vs prior week", "Average Value", "Current vs Avg"]]
 
-            avg_source = d.groupby([pivot_dim,"WeekEnd"], as_index=False).agg(Value=(metric_col,"sum"))
-            avg_source["WeekEnd"] = pd.to_datetime(avg_source["WeekEnd"], errors="coerce")
-            if isinstance(weekly_avg_basis, str) and weekly_avg_basis.endswith("weeks"):
-                avg_n = int(str(weekly_avg_basis).split()[0])
-                avg_weeks = sorted([pd.to_datetime(x) for x in avg_source["WeekEnd"].dropna().unique().tolist()])[-avg_n:]
-                avg_source = avg_source[avg_source["WeekEnd"].isin(avg_weeks)].copy()
-            else:
-                avg_period = _display_to_period(weekly_avg_basis)
-                avg_source = avg_source[avg_source["WeekEnd"].dt.to_period("M").astype(str) == str(avg_period)].copy()
-            avg_tbl = avg_source.groupby(pivot_dim, as_index=False).agg(**{"Average Value": ("Value", "mean")}) if not avg_source.empty else pd.DataFrame(columns=[pivot_dim, "Average Value"])
-            piv = piv.reset_index().merge(avg_tbl, on=pivot_dim, how="left")
-            piv["Average Value"] = piv["Average Value"].fillna(0.0)
+            fmt_value = (lambda v: money(float(v))) if metric_col == "Sales" else (lambda v: f"{float(v):,.0f}")
+            sty = piv.style
+            sty = sty.format({c: fmt_value for c in week_cols + ["Average Value"] if c in piv.columns})
+            sty = sty.format({"Δ vs prior week": fmt_value, "Current vs Avg": fmt_value})
 
-            if week_list:
-                w_last = str(week_list[-1].date())
-                w_prev = str(week_list[-2].date()) if len(week_list) >= 2 else None
-                last_vals = pd.to_numeric(piv.get(w_last, 0.0), errors="coerce").fillna(0.0)
-                prev_vals = pd.to_numeric(piv.get(w_prev, 0.0), errors="coerce").fillna(0.0) if w_prev else 0.0
-                piv["Δ vs prior week"] = last_vals - prev_vals
-                piv["Current vs Avg"] = last_vals - pd.to_numeric(piv["Average Value"], errors="coerce").fillna(0.0)
-            else:
-                piv["Δ vs prior week"] = 0.0
-                piv["Current vs Avg"] = 0.0
+            def _posneg(v):
+                try:
+                    x = float(v)
+                except Exception:
+                    return ""
+                if x > 0:
+                    return "color:#2e7d32; font-weight:700;"
+                if x < 0:
+                    return "color:#c62828; font-weight:700;"
+                return ""
 
-            week_cols = [str(w.date()) for w in week_list]
-            ordered_cols = [pivot_dim] + week_cols + ["Δ vs prior week", "Average Value", "Current vs Avg"]
-            piv = piv[[c for c in ordered_cols if c in piv.columns]].copy()
-
-            def _fmt_value(v):
-                return money(v) if metric_col == "Sales" else f"{float(v):,.0f}"
-            def _fmt_diff(v):
-                return signed_money_html(v) if metric_col == "Sales" else signed_int_html(v)
-
-            show = piv.copy()
-            for c in week_cols + ["Average Value"]:
-                if c in show.columns:
-                    show[c] = pd.to_numeric(show[c], errors="coerce").fillna(0.0).map(_fmt_value)
             for c in ["Δ vs prior week", "Current vs Avg"]:
-                if c in show.columns:
-                    show[c] = pd.to_numeric(show[c], errors="coerce").fillna(0.0).map(_fmt_diff)
-            st.markdown(show.to_html(escape=False, index=False, classes='report-table'), unsafe_allow_html=True)
+                if c in piv.columns:
+                    sty = sty.applymap(_posneg, subset=[c])
+            st.dataframe(sty, use_container_width=True, hide_index=True, height=_table_height(piv, max_px=650))
 
         # original standard view sections
         st.subheader("New Activity")
