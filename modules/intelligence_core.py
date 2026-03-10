@@ -1617,35 +1617,51 @@ def run_app():
     
     if analysis_view == "Month / Year Compare":
         st.subheader("Current Only / Compare Only Activity")
-        cur_s = dfA.groupby("SKU", as_index=False).agg(Current_Units=("Units", "sum"), Current_Sales=("Sales", "sum"))
-        cmp_s = dfB.groupby("SKU", as_index=False).agg(Compare_Units=("Units", "sum"), Compare_Sales=("Sales", "sum")) if pB is not None else pd.DataFrame(columns=["SKU", "Compare_Units", "Compare_Sales"])
 
-        lost = cmp_s.merge(cur_s, on="SKU", how="left").fillna(0.0)
-        lost = lost[(lost["Compare_Sales"] > 0) & (lost["Current_Sales"] <= 0)].copy().sort_values(["Compare_Sales", "Compare_Units"], ascending=[False, False])
+        cur_s = dfA.groupby("SKU", as_index=False).agg(Current_Sales=("Sales","sum"), Current_Units=("Units","sum"))
+        cmp_s = dfB.groupby("SKU", as_index=False).agg(Compare_Sales=("Sales","sum"), Compare_Units=("Units","sum"))
+        activity = cmp_s.merge(cur_s, on="SKU", how="outer").fillna(0.0)
 
-        new_act = cur_s.merge(cmp_s, on="SKU", how="left").fillna(0.0)
-        new_act = new_act[(new_act["Current_Sales"] > 0) & (new_act["Compare_Sales"] <= 0)].copy().sort_values(["Current_Sales", "Current_Units"], ascending=[False, False])
+        lost = activity[(activity["Compare_Sales"] > 0) & (activity["Current_Sales"] <= 0)].copy()
+        lost["Units"] = -lost["Compare_Units"].astype(float)
+        lost["Sales"] = -lost["Compare_Sales"].astype(float)
+        lost = lost[["SKU", "Units", "Sales"]].sort_values("Sales")
 
-        a1, a2 = st.columns(2)
-        with a1:
+        new_act = activity[(activity["Current_Sales"] > 0) & (activity["Compare_Sales"] <= 0)].copy()
+        new_act["Units"] = new_act["Current_Units"].astype(float)
+        new_act["Sales"] = new_act["Current_Sales"].astype(float)
+        new_act = new_act[["SKU", "Units", "Sales"]].sort_values("Sales", ascending=False)
+
+        def _activity_with_total(df_in: pd.DataFrame) -> pd.DataFrame:
+            if df_in.empty:
+                return df_in
+            total = pd.DataFrame([{
+                "SKU": "Total",
+                "Units": float(df_in["Units"].sum()),
+                "Sales": float(df_in["Sales"].sum()),
+            }])
+            return pd.concat([df_in, total], ignore_index=True)
+
+        lcol, rcol = st.columns(2)
+        with lcol:
             st.markdown("**Lost Activity — sold in compare, zero in current**")
             if lost.empty:
                 st.caption("None.")
             else:
-                show_lost = lost[["SKU", "Compare_Units", "Compare_Sales"]].rename(columns={"Compare_Units": "Units", "Compare_Sales": "Sales"}).copy()
+                show_lost = _activity_with_total(lost.copy())
                 show_lost["Units"] = show_lost["Units"].map(lambda v: f"{float(v):,.0f}")
                 show_lost["Sales"] = show_lost["Sales"].map(money)
                 render_df(show_lost, height=320)
-        with a2:
+        with rcol:
             st.markdown("**New Activity — sold in current, zero in compare**")
             if new_act.empty:
                 st.caption("None.")
             else:
-                show_new = new_act[["SKU", "Current_Units", "Current_Sales"]].rename(columns={"Current_Units": "Units", "Current_Sales": "Sales"}).copy()
+                show_new = _activity_with_total(new_act.copy())
                 show_new["Units"] = show_new["Units"].map(lambda v: f"{float(v):,.0f}")
                 show_new["Sales"] = show_new["Sales"].map(money)
                 render_df(show_new, height=320)
-
+    
         st.divider()
         st.subheader("Comparison Detail")
         pivot_dim = st.selectbox("Compare rows by", options=["Retailer","Vendor"], index=0, key="multi_compare_dim")
