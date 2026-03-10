@@ -808,14 +808,12 @@ def leader_sales_card(label: str, name: str, current_sales: float, previous_sale
             <div class="kpi-big-name">{html.escape(str(name))}</div>
             <div style="display:flex; gap:18px; align-items:flex-start;">
                 <div style="flex:1 1 0; min-width:0;">
-                    <div style="font-size:11px; opacity:0.75; margin-bottom:2px;">Sales</div>
                     <div class="kpi-value">{money(float(current_sales))}</div>
                     <div class="kpi-delta" style="color:{sales_color}">
                         <span class="delta-abs">{sales_arrow} {money(sales_delta)}</span>{sales_pct_html}
                     </div>
                 </div>
                 <div style="flex:1 1 0; min-width:0;">
-                    <div style="font-size:11px; opacity:0.75; margin-bottom:2px;">Units</div>
                     <div class="kpi-value">{cur_u:,.0f}</div>
                     <div class="kpi-delta" style="color:{units_color}">
                         <span class="delta-abs">{units_arrow} {units_delta:,.0f}</span>{units_pct_html}
@@ -847,6 +845,28 @@ def selection_total_card(label: str, cur_kpi: Dict[str, float], cmp_kpi: Dict[st
     sales_pct_html = f" ({pct_fmt(sales_pct)})" if not pd.isna(sales_pct) else ""
     units_pct_html = f" ({pct_fmt(units_pct)})" if not pd.isna(units_pct) else ""
 
+    cur_active = float(cur_kpi.get('Active SKUs', 0))
+    cmp_active = float(cmp_kpi.get('Active SKUs', 0))
+    cur_retailers = float(cur_kpi.get('Active Retailers', 0))
+    cmp_retailers = float(cmp_kpi.get('Active Retailers', 0))
+    cur_vendors = float(cur_kpi.get('Active Vendors', 0))
+    cmp_vendors = float(cmp_kpi.get('Active Vendors', 0))
+
+    cur_avg_units = (units / cur_active) if cur_active else 0.0
+    cmp_avg_units = (prev_units / cmp_active) if cmp_active else 0.0
+    cur_avg_sales = (sales / cur_active) if cur_active else 0.0
+    cmp_avg_sales = (prev_sales / cmp_active) if cmp_active else 0.0
+
+    def _inline_delta(cur: float, prev: float, is_money: bool = False, decimals: int = 0) -> str:
+        d = cur - prev
+        color = "#2e7d32" if d > 0 else ("#c62828" if d < 0 else "var(--text-color)")
+        arrow = "▲" if d > 0 else ("▼" if d < 0 else "•")
+        if is_money:
+            txt = money(d)
+        else:
+            txt = f"{d:,.{decimals}f}" if decimals else f"{d:,.0f}"
+        return f"<span style='color:{color}; font-weight:700; margin-left:6px;'>{arrow} {txt}</span>"
+
     st.markdown(
         f"""
         <div class="kpi-card">
@@ -857,8 +877,8 @@ def selection_total_card(label: str, cur_kpi: Dict[str, float], cmp_kpi: Dict[st
             <div class="kpi-sub" style="font-size:12px;opacity:0.75;margin-bottom:2px;">Total Units</div>
             <div class="kpi-sub" style="font-size:16px;font-weight:700;color:var(--text-color);">{units:,.0f}</div>
             <div class="kpi-delta" style="color:{units_color};margin-bottom:8px;">{units_arrow} {units_delta:,.0f}{units_pct_html} &nbsp; • &nbsp; ASP {money(asp)}</div>
-            <div class="kpi-sub" style="margin-top:6px;">Active SKUs: {int(cur_kpi.get('Active SKUs', 0)):,} &nbsp; • &nbsp; Retailers: {int(cur_kpi.get('Active Retailers', 0)):,} &nbsp; • &nbsp; Vendors: {int(cur_kpi.get('Active Vendors', 0)):,}</div>
-            <div class="kpi-sub" style="margin-top:6px;">Avg Units / SKU {((units / cur_kpi.get('Active SKUs', 0)) if cur_kpi.get('Active SKUs', 0) else 0):,.1f} &nbsp; • &nbsp; Avg Sales / SKU {money((sales / cur_kpi.get('Active SKUs', 0)) if cur_kpi.get('Active SKUs', 0) else 0)}</div>
+            <div class="kpi-sub" style="margin-top:6px; white-space:normal;">Active SKUs: {int(cur_active):,}{_inline_delta(cur_active, cmp_active)} &nbsp; • &nbsp; Retailers: {int(cur_retailers):,}{_inline_delta(cur_retailers, cmp_retailers)} &nbsp; • &nbsp; Vendors: {int(cur_vendors):,}{_inline_delta(cur_vendors, cmp_vendors)}</div>
+            <div class="kpi-sub" style="margin-top:6px; white-space:normal;">Avg Units / SKU {cur_avg_units:,.1f}{_inline_delta(cur_avg_units, cmp_avg_units, decimals=1)} &nbsp; • &nbsp; Avg Sales / SKU {money(cur_avg_sales)}{_inline_delta(cur_avg_sales, cmp_avg_sales, is_money=True)}</div>
         </div>
         """,
         unsafe_allow_html=True,
@@ -870,19 +890,40 @@ def top_two_card(label: str, entries: List[dict]):
         name = html.escape(str(item.get("name", "")))
         sales = float(item.get("sales", 0.0))
         other_sales = float(item.get("other_sales", 0.0))
-        share = float(item.get("share", np.nan))
-        delta = sales - other_sales
-        pct = pct_change(sales, other_sales)
-        color = "#2e7d32" if delta > 0 else ("#c62828" if delta < 0 else "var(--text-color)")
-        arrow = "▲" if delta > 0 else ("▼" if delta < 0 else "•")
-        pct_html = f" ({pct_fmt(pct)})" if not pd.isna(pct) else ""
-        share_html = f"{share*100:,.1f}% of total" if not pd.isna(share) else ""
+        units = float(item.get("units", 0.0))
+        other_units = float(item.get("other_units", 0.0))
+        sales_share = float(item.get("sales_share", np.nan))
+        units_share = float(item.get("units_share", np.nan))
+
+        sales_delta = sales - other_sales
+        sales_pct = pct_change(sales, other_sales)
+        sales_color = "#2e7d32" if sales_delta > 0 else ("#c62828" if sales_delta < 0 else "var(--text-color)")
+        sales_arrow = "▲" if sales_delta > 0 else ("▼" if sales_delta < 0 else "•")
+        sales_pct_html = f" ({pct_fmt(sales_pct)})" if not pd.isna(sales_pct) else ""
+        sales_share_html = f"{sales_share*100:,.1f}% share" if not pd.isna(sales_share) else ""
+
+        units_delta = units - other_units
+        units_pct = pct_change(units, other_units)
+        units_color = "#2e7d32" if units_delta > 0 else ("#c62828" if units_delta < 0 else "var(--text-color)")
+        units_arrow = "▲" if units_delta > 0 else ("▼" if units_delta < 0 else "•")
+        units_pct_html = f" ({pct_fmt(units_pct)})" if not pd.isna(units_pct) else ""
+        units_share_html = f"{units_share*100:,.1f}% share" if not pd.isna(units_share) else ""
+
         rows.append(
             f"<div class='top-two-item'>"
             f"<div class='kpi-big-name'>{name}</div>"
-            f"<div class='kpi-sub' style='font-size:16px;font-weight:700;color:var(--text-color)'>{money(sales)}</div>"
-            f"<div class='kpi-delta' style='color:{color}'>{arrow} {money(delta)}{pct_html}</div>"
-            f"<div class='kpi-sub'>{share_html}</div>"
+            f"<div style='display:flex; gap:18px; align-items:flex-start;'>"
+            f"  <div style='flex:1 1 0; min-width:0;'>"
+            f"    <div class='kpi-sub' style='font-size:16px;font-weight:700;color:var(--text-color)'>{money(sales)}</div>"
+            f"    <div class='kpi-delta' style='color:{sales_color}'>{sales_arrow} {money(sales_delta)}{sales_pct_html}</div>"
+            f"    <div class='kpi-sub'>{sales_share_html}</div>"
+            f"  </div>"
+            f"  <div style='flex:1 1 0; min-width:0;'>"
+            f"    <div class='kpi-sub' style='font-size:16px;font-weight:700;color:var(--text-color)'>{units:,.0f}</div>"
+            f"    <div class='kpi-delta' style='color:{units_color}'>{units_arrow} {units_delta:,.0f}{units_pct_html}</div>"
+            f"    <div class='kpi-sub'>{units_share_html}</div>"
+            f"  </div>"
+            f"</div>"
             f"</div>"
         )
     if not rows:
@@ -903,14 +944,13 @@ def count_sales_card(label: str, count_value: int, sales_value: float, color: st
         sales_txt = "+" + sales_txt
     elif signed_sales and sales_value < 0:
         sales_txt = "-" + sales_txt
-    pct_html = "" if pd.isna(pct) else f'<div class="kpi-delta" style="color:{color}">({pct_fmt(pct)})</div>'
+    pct_html = "" if pd.isna(pct) else f'<span style="margin-left:10px; color:{color}; font-weight:700;">({pct_fmt(pct)})</span>'
     st.markdown(
         f"""
         <div class="kpi-card">
             <div class="kpi-title">{label}</div>
             <div class="kpi-value" style="color:{color}">{count_value:,}</div>
-            <div class="kpi-sub" style="color:{color}">Sales: {sales_txt}</div>
-            {pct_html}
+            <div class="kpi-sub" style="color:{color}; display:flex; align-items:center; gap:8px; flex-wrap:wrap;">Sales: <span style="font-weight:700;">{sales_txt}</span>{pct_html}</div>
         </div>
         """,
         unsafe_allow_html=True,
@@ -1483,9 +1523,9 @@ def run_app():
     headline_bits = []
     if compare_mode != "None":
         headline_bits.append(f"Sales {('up' if sales_delta >= 0 else 'down')} **{money(abs(sales_delta))}** vs comparison.")
-        headline_bits.append(f"Units {('up' if units_delta >= 0 else 'down')} **{abs(units_delta):,.0f}**.")
+        headline_bits.append(f"Units {('up' if units_delta >= 0 else 'down')} **{abs(units_delta):,.0f}** to **{kA['Units']:,.0f}** total.")
         if not np.isnan(asp_delta):
-            headline_bits.append(f"ASP {('up' if asp_delta >= 0 else 'down')} **{money(abs(asp_delta))}**.")
+            headline_bits.append(f"ASP {('up' if asp_delta >= 0 else 'down')} **{money(abs(asp_delta))}** to **{money(aspA)}**.")
         if not top_pos.empty:
             headline_bits.append(f"Top driver: **{top_pos.iloc[0][driver_level]}** ({money(float(top_pos.iloc[0]['Sales_Δ']))}).")
         if not top_neg.empty:
@@ -1548,21 +1588,26 @@ def run_app():
     def _top_two_with_compare(df_sel: pd.DataFrame, df_other: pd.DataFrame, level: str):
         if df_sel.empty:
             return []
-        cur = df_sel.groupby(level, as_index=False).agg(Sales=("Sales", "sum"))
-        oth = df_other.groupby(level, as_index=False).agg(Other_Sales=("Sales", "sum")) if not df_other.empty else pd.DataFrame(columns=[level, "Other_Sales"])
+        cur = df_sel.groupby(level, as_index=False).agg(Sales=("Sales", "sum"), Units=("Units", "sum"))
+        oth = df_other.groupby(level, as_index=False).agg(Other_Sales=("Sales", "sum"), Other_Units=("Units", "sum")) if not df_other.empty else pd.DataFrame(columns=[level, "Other_Sales", "Other_Units"])
         m = cur.merge(oth, on=level, how="left").fillna(0.0)
         if m.empty:
             return []
         total_sales = float(m["Sales"].sum())
+        total_units = float(m["Units"].sum())
         m = m.sort_values(["Sales", level], ascending=[False, True]).head(2)
         out = []
         for _, r in m.iterrows():
             sales = float(r["Sales"])
+            units = float(r.get("Units", 0.0))
             out.append({
                 "name": str(r[level]),
                 "sales": sales,
-                "other_sales": float(r["Other_Sales"]),
-                "share": (sales / total_sales) if total_sales else np.nan,
+                "other_sales": float(r.get("Other_Sales", 0.0)),
+                "units": units,
+                "other_units": float(r.get("Other_Units", 0.0)),
+                "sales_share": (sales / total_sales) if total_sales else np.nan,
+                "units_share": (units / total_units) if total_units else np.nan,
             })
         return out
     
@@ -1585,9 +1630,9 @@ def run_app():
 
         cur_sku = dfA.groupby("SKU", as_index=False).agg(Sales=("Sales","sum"), Units=("Units","sum"))
         cmp_sku = dfB.groupby("SKU", as_index=False).agg(Sales=("Sales","sum"), Units=("Units","sum"))
-        cur_only = cur_sku.merge(cmp_sku[["SKU","Sales"]].rename(columns={"Sales":"Compare_Sales"}), on="SKU", how="left").fillna(0.0)
+        cur_only = cur_sku.merge(cmp_sku[["SKU","Sales","Units"]].rename(columns={"Sales":"Compare_Sales", "Units":"Compare_Units"}), on="SKU", how="left").fillna(0.0)
         cur_only = cur_only[(cur_only["Sales"] > 0) & (cur_only["Compare_Sales"] <= 0)].copy()
-        cmp_only = cmp_sku.merge(cur_sku[["SKU","Sales"]].rename(columns={"Sales":"Current_Sales"}), on="SKU", how="left").fillna(0.0)
+        cmp_only = cmp_sku.merge(cur_sku[["SKU","Sales","Units"]].rename(columns={"Sales":"Current_Sales", "Units":"Current_Units"}), on="SKU", how="left").fillna(0.0)
         cmp_only = cmp_only[(cmp_only["Sales"] > 0) & (cmp_only["Current_Sales"] <= 0)].copy()
         new_count = int(len(cur_only)); new_sales = float(cur_only["Sales"].sum())
         lost_count = int(len(cmp_only)); lost_sales = float(cmp_only["Sales"].sum())
