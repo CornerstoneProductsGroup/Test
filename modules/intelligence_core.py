@@ -13,6 +13,16 @@ import numpy as np
 import pandas as pd
 import streamlit as st
 
+
+def _table_height(df, row_px: int = 34, header_px: int = 40, min_px: int = 140, max_px: int = 900):
+    """Safe dataframe height helper used across table renders."""
+    try:
+        n = 0 if df is None else len(df)
+    except Exception:
+        n = 0
+    h = header_px + max(1, int(n)) * row_px
+    return max(min_px, min(int(h), int(max_px)))
+
 # Reuse ingestion helpers from the current (legacy) app where possible.
 from modules.app_core import read_weekly_workbook, parse_date_range_from_filename
 
