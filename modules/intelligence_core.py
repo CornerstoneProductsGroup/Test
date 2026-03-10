@@ -766,36 +766,51 @@ def leader_sales_card(label: str, name: str, current_sales: float, previous_sale
     sales_arrow = "▲" if sales_delta > 0 else ("▼" if sales_delta < 0 else "•")
     sales_pct_html = "" if pd.isna(sales_pct) else f'<span class="delta-pct" style="color:{sales_color}">({pct_fmt(sales_pct)})</span>'
 
-    units_block = ""
-    if current_units is not None:
-        cur_u = float(current_units)
-        prev_u = float(previous_units or 0.0)
-        units_delta = cur_u - prev_u
-        units_pct = pct_change(cur_u, prev_u)
-        units_color = "#2e7d32" if units_delta > 0 else ("#c62828" if units_delta < 0 else "var(--text-color)")
-        units_arrow = "▲" if units_delta > 0 else ("▼" if units_delta < 0 else "•")
-        units_pct_html = "" if pd.isna(units_pct) else f'<span class="delta-pct" style="color:{units_color}">({pct_fmt(units_pct)})</span>'
-        units_block = f"""
-            <div style="display:flex; gap:18px; align-items:flex-start;">
-                <div style="flex:1 1 0; min-width:0;">
-                    <div class="kpi-value">{money(float(current_sales))}</div>
-                    <div class="kpi-delta" style="color:{sales_color}"><span class="delta-abs">{sales_arrow} {money(sales_delta)}</span>{sales_pct_html}</div>
-                </div>
-                <div style="flex:1 1 0; min-width:0;">
-                    <div class="kpi-value">{cur_u:,.0f}</div>
-                    <div class="kpi-delta" style="color:{units_color}"><span class="delta-abs">{units_arrow} {units_delta:,.0f}</span>{units_pct_html}</div>
+    if current_units is None:
+        st.markdown(
+            f"""
+            <div class="kpi-card">
+                <div class="kpi-title">{html.escape(str(label))}</div>
+                <div class="kpi-big-name">{html.escape(str(name))}</div>
+                <div class="kpi-value">{money(float(current_sales))}</div>
+                <div class="kpi-delta" style="color:{sales_color}">
+                    <span class="delta-abs">{sales_arrow} {money(sales_delta)}</span>{sales_pct_html}
                 </div>
             </div>
-        """
-    else:
-        units_block = f'<div class="kpi-value">{money(float(current_sales))}</div><div class="kpi-delta" style="color:{sales_color}"><span class="delta-abs">{sales_arrow} {money(sales_delta)}</span>{sales_pct_html}</div>'
+            """,
+            unsafe_allow_html=True,
+        )
+        return
+
+    cur_u = float(current_units)
+    prev_u = float(previous_units or 0.0)
+    units_delta = cur_u - prev_u
+    units_pct = pct_change(cur_u, prev_u)
+    units_color = "#2e7d32" if units_delta > 0 else ("#c62828" if units_delta < 0 else "var(--text-color)")
+    units_arrow = "▲" if units_delta > 0 else ("▼" if units_delta < 0 else "•")
+    units_pct_html = "" if pd.isna(units_pct) else f'<span class="delta-pct" style="color:{units_color}">({pct_fmt(units_pct)})</span>'
 
     st.markdown(
         f"""
         <div class="kpi-card">
-            <div class="kpi-title">{label}</div>
+            <div class="kpi-title">{html.escape(str(label))}</div>
             <div class="kpi-big-name">{html.escape(str(name))}</div>
-            {units_block}
+            <div style="display:flex; gap:18px; align-items:flex-start;">
+                <div style="flex:1 1 0; min-width:0;">
+                    <div style="font-size:11px; opacity:0.75; margin-bottom:2px;">Sales</div>
+                    <div class="kpi-value">{money(float(current_sales))}</div>
+                    <div class="kpi-delta" style="color:{sales_color}">
+                        <span class="delta-abs">{sales_arrow} {money(sales_delta)}</span>{sales_pct_html}
+                    </div>
+                </div>
+                <div style="flex:1 1 0; min-width:0;">
+                    <div style="font-size:11px; opacity:0.75; margin-bottom:2px;">Units</div>
+                    <div class="kpi-value">{cur_u:,.0f}</div>
+                    <div class="kpi-delta" style="color:{units_color}">
+                        <span class="delta-abs">{units_arrow} {units_delta:,.0f}</span>{units_pct_html}
+                    </div>
+                </div>
+            </div>
         </div>
         """,
         unsafe_allow_html=True,
