@@ -12,21 +12,17 @@ def render(ctx: dict):
     .kpi-card .kpi-value{font-size:31px !important;}
     .kpi-card .kpi-delta{font-size:15px !important;}
     .kpi-card .kpi-sub{font-size:15px !important;}
-    .kpi-card .kpi-big-name{font-size:19px !important;}
-    .kpi-card .top-two-item .kpi-value{font-size:29px !important;}
+    .kpi-card .top-two-item .kpi-big-name{font-size:22px !important;}
+    .kpi-card .top-two-item .kpi-value{font-size:30px !important;}
+    .kpi-card .top-two-item .kpi-delta{font-size:14px !important;}
+    .kpi-card .top-two-item .kpi-sub{font-size:14px !important;}
     </style>
     """, unsafe_allow_html=True)
 
     dfA=ctx["dfA"]; dfB=ctx["dfB"]; kA=ctx["kA"]; kB=ctx["kB"]; a_lbl=ctx["a_lbl"]; b_lbl=ctx["b_lbl"]; compare_mode=ctx["compare_mode"]; min_sales=ctx["min_sales"];
 
     def render_shaded_total_table(df: pd.DataFrame, height: int = 760):
-        def _row_style(row):
-            is_total = str(row.iloc[0]).strip().lower() == "total"
-            bg = "#eef2f7" if is_total else ("#ffffff" if (row.name % 2 == 0) else "#f8fafc")
-            wt = "700" if is_total else "400"
-            return [f"background-color: {bg}; font-weight: {wt};" for _ in row]
-        sty = df.style.apply(_row_style, axis=1)
-        st.dataframe(sty, use_container_width=True, hide_index=True, height=height)
+        st.dataframe(df, use_container_width=True, hide_index=True, height=height)
 
     def pct_change(cur, prev):
         if prev == 0: return np.nan if cur == 0 else np.inf
@@ -156,7 +152,7 @@ def render(ctx: dict):
     show = rename_ab_columns(comp_show.copy(), a_lbl, b_lbl)
     sales_a_col = f"Sales ({a_lbl})"; sales_b_col = f"Sales ({b_lbl})" if b_lbl else "Sales (Comparison)"
     show[sales_a_col] = show[sales_a_col].map(money); show[sales_b_col] = show[sales_b_col].map(money); show["Difference"] = show["Difference"].map(money); show["% Change"] = show["% Change"].map(pct_fmt)
-    render_shaded_total_table(show[[pivot_dim, sales_a_col, sales_b_col, "Difference", "% Change"]], height=820)
+    render_shaded_total_table(show[[pivot_dim, sales_a_col, sales_b_col, "Difference", "% Change"]], height=900)
 
     st.divider(); st.subheader("Movers")
     a = dfA.groupby("SKU", as_index=False).agg(Sales_A=("Sales","sum"))
