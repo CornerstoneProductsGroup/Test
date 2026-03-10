@@ -788,7 +788,7 @@ def selection_total_card(label: str, cur_kpi: Dict[str, float], cmp_kpi: Dict[st
             <div class="kpi-value" style="font-size:28px;">{money(sales)}</div>
             <div class="kpi-delta" style="color:{sales_color};margin-bottom:8px;font-size:14px;">{sales_arrow} {money(sales_delta)}{sales_pct_html}</div>
             <div class="kpi-sub" style="font-size:13px;opacity:0.75;margin-bottom:2px;">Total Units</div>
-            <div class="kpi-sub" style="font-size:22px;font-weight:700;color:var(--text-color);">{units:,.0f}</div>
+            <div class="kpi-sub" style="font-size:18px;font-weight:700;color:var(--text-color);">{units:,.0f}</div>
             <div class="kpi-delta" style="color:{units_color};margin-bottom:8px;font-size:14px;">{units_arrow} {units_delta:,.0f}{units_pct_html} &nbsp; • &nbsp; ASP {money(asp)} <span style='color:{asp_color};font-weight:700;'>({asp_text})</span></div>
             <div class="kpi-sub" style="margin-top:6px;font-size:13px;">Active SKUs: {active_skus:,}{inline_delta(active_skus - prev_active_skus)} &nbsp; • &nbsp; Retailers: {active_retailers:,}{inline_delta(active_retailers - prev_active_retailers)} &nbsp; • &nbsp; Vendors: {active_vendors:,}{inline_delta(active_vendors - prev_active_vendors)}</div>
             <div class="kpi-sub" style="margin-top:6px;font-size:13px;">Avg Units / SKU {avg_units:,.1f}{inline_delta(avg_units - prev_avg_units, decimals=1)} &nbsp; • &nbsp; Avg Sales / SKU {money(avg_sales)}{inline_delta(avg_sales - prev_avg_sales, fmt='money')}</div>
@@ -822,15 +822,15 @@ def top_two_card(label: str, entries: List[dict]):
         divider = "border-top:1px solid rgba(128,128,128,0.25);margin-top:8px;padding-top:8px;" if idx == 2 else ""
         rows.append(
             f"<div class='top-two-item' style='{divider}'>"
-            f"<div class='kpi-big-name' style='font-size:20px;'><span style='display:inline-block;min-width:18px;font-weight:800;'>{idx}.</span> {name}</div>"
+            f"<div class='kpi-big-name' style='font-size:16px;'><span style='display:inline-block;min-width:18px;font-weight:800;'>{idx}.</span> {name}</div>"
             f"<div style='display:flex;gap:16px;align-items:flex-start;'>"
             f"<div style='flex:1 1 0;min-width:0;'>"
-            f"<div class='kpi-sub' style='font-size:22px;font-weight:800;color:var(--text-color)'>{money(sales)}</div>"
+            f"<div class='kpi-sub' style='font-size:18px;font-weight:800;color:var(--text-color)'>{money(sales)}</div>"
             f"<div class='kpi-delta' style='color:{color_sales};font-size:14px;'>{arrow_sales} {money(sales_delta)}{sales_pct_html}</div>"
             f"<div class='kpi-sub' style='font-size:13px;'>{share_html}</div>"
             f"</div>"
             f"<div style='flex:1 1 0;min-width:0;'>"
-            f"<div class='kpi-sub' style='font-size:22px;font-weight:800;color:var(--text-color)'>{units:,.0f}</div>"
+            f"<div class='kpi-sub' style='font-size:18px;font-weight:800;color:var(--text-color)'>{units:,.0f}</div>"
             f"<div class='kpi-delta' style='color:{color_units};font-size:14px;'>{arrow_units} {units_delta:,.0f}{units_pct_html}</div>"
             f"<div class='kpi-sub' style='font-size:13px;'>{unit_share_html}</div>"
             f"</div>"
