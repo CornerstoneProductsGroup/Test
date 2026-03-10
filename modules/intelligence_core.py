@@ -13,16 +13,6 @@ import numpy as np
 import pandas as pd
 import streamlit as st
 
-
-def _table_height(df, row_px: int = 34, header_px: int = 40, min_px: int = 140, max_px: int = 900):
-    """Safe dataframe height helper used across table renders."""
-    try:
-        n = 0 if df is None else len(df)
-    except Exception:
-        n = 0
-    h = header_px + max(1, int(n)) * row_px
-    return max(min_px, min(int(h), int(max_px)))
-
 # Reuse ingestion helpers from the current (legacy) app where possible.
 from modules.app_core import read_weekly_workbook, parse_date_range_from_filename
 
@@ -503,95 +493,77 @@ def reactivated(df_all: pd.DataFrame, p: Period, dormant_weeks: int = 8) -> pd.D
             out.append({"SKU": sku, "ReactivatedWeek": first_cur, "DormantWeeks": gap_weeks})
     return pd.DataFrame(out).sort_values("ReactivatedWeek") if out else pd.DataFrame(columns=["SKU","ReactivatedWeek","DormantWeeks"])
 
-def lifecycle_table(df_all: pd.DataFrame, p: Period, lookback_weeks: int = 8, scope: str = "SKU (All Retailers)") -> pd.DataFrame:
-    """Lifecycle stage for SKUs overall or retailer-specific."""
-    by = ["SKU"] if scope == "SKU (All Retailers)" else ["Retailer", "SKU"]
-    s = weekly_series(df_all, by)
-    base_cols = (["Retailer", "SKU"] if len(by) == 2 else ["SKU"]) + [
-        "Stage", "Trend", "Sales (lookback)", "Units (lookback)",
-        "Last Week Sales", "WoW Sales Δ", "Weeks Up", "Weeks Down", "Weeks With Sales"
-    ]
+def lifecycle_table(df_all: pd.DataFrame, p: Period, lookback_weeks: int = 8) -> pd.DataFrame:
+    # Stage per SKU using full history but relative to current period.
+    s = weekly_series(df_all, ["SKU"])
     if s.empty:
-        return pd.DataFrame(columns=base_cols)
-
+        return pd.DataFrame(columns=["SKU","Stage","Momentum","Sales (lookback)"])
+    # universe and anchor = period end
     anchor = p.end
-    lb_start = anchor - pd.Timedelta(days=(7 * lookback_weeks - 1))
-    full_hist = df_all[df_all["Sales"] > 0].copy()
-    first_week = full_hist.groupby(by)["WeekEnd"].min() if not full_hist.empty else pd.Series(dtype="datetime64[ns]")
-    last_week = full_hist.groupby(by)["WeekEnd"].max() if not full_hist.empty else pd.Series(dtype="datetime64[ns]")
+    lb_start = anchor - pd.Timedelta(days=(7*lookback_weeks - 1))
+    out=[]
+    first_week = df_all[df_all["Sales"] > 0].groupby("SKU")["WeekEnd"].min()
+    last_week = df_all[df_all["Sales"] > 0].groupby("SKU")["WeekEnd"].max()
 
-    out = []
-    for key, g in s.groupby(by):
-        if len(by) == 1:
-            sku = key[0] if isinstance(key, tuple) else key
-            entity = {"SKU": sku}
-            lookup_key = sku
-        else:
-            retailer, sku = key
-            entity = {"Retailer": retailer, "SKU": sku}
-            lookup_key = key
+    # placements
+    fr = df_all[df_all["Sales"] > 0].groupby(["SKU","Retailer"])["WeekEnd"].min().reset_index().rename(columns={"WeekEnd":"FirstWeekRetailer"})
 
+    for sku, g in s.groupby("SKU"):
         g = g.sort_values("WeekEnd")
+        # window
         gw = g[(g["WeekEnd"] >= lb_start) & (g["WeekEnd"] <= anchor)].copy()
+        mom = momentum_score(gw["Sales"]) if not gw.empty else 0.0
         sales_lb = float(gw["Sales"].sum()) if not gw.empty else 0.0
         units_lb = float(gw["Units"].sum()) if (not gw.empty and "Units" in gw.columns) else 0.0
+
+        fw = first_week.get(sku, pd.NaT)
+        lw = last_week.get(sku, pd.NaT)
+
+        stage = "Mature"
+        trend = "Flat"
+        slope = 0.0
+        weeks_up = 0
+        weeks_down = 0
         last_w_sales = float(gw["Sales"].iloc[-1]) if len(gw) >= 1 else 0.0
         prev_w_sales = float(gw["Sales"].iloc[-2]) if len(gw) >= 2 else 0.0
         wow_sales = last_w_sales - prev_w_sales if len(gw) >= 2 else np.nan
-        weeks_with_sales = int((pd.to_numeric(gw.get("Sales", 0.0), errors="coerce").fillna(0.0) > 0).sum()) if not gw.empty else 0
-
-        fw = first_week.get(lookup_key, pd.NaT)
-        lw = last_week.get(lookup_key, pd.NaT)
-
-        trend_symbol = "→"
-        weeks_up = 0
-        weeks_down = 0
-        stage = "Mature"
-
+        # Launch: first sale ever in current period
         if pd.notna(fw) and (fw >= p.start) and (fw <= p.end):
             stage = "Launch"
-            trend_symbol = "↗"
-        elif pd.isna(lw):
-            stage = "Inactive 12+ Weeks"
-            trend_symbol = "↓"
         else:
-            weeks_since_sale = int((anchor.normalize() - pd.to_datetime(lw).normalize()).days // 7)
-            if weeks_since_sale >= 12:
-                stage = "Inactive 12+ Weeks"
-                trend_symbol = "↓"
-            elif weeks_with_sales == 0:
+            # Dormant: no sale in lookback window
+            if pd.isna(lw) or lw < lb_start:
                 stage = "Dormant"
-                trend_symbol = "→"
             else:
-                trend_label, slope, wu, wd = classify_trend(gw["Sales"], min_weeks=min(lookback_weeks, max(2, len(gw))))
-                weeks_up, weeks_down = int(wu), int(wd)
-                if trend_label == "Increasing":
-                    stage = "Growth"
-                    trend_symbol = "↗"
-                elif trend_label == "Declining":
-                    stage = "Decline"
-                    trend_symbol = "↘"
-                else:
-                    stage = "Mature" if weeks_with_sales >= max(2, lookback_weeks // 2) else "Dormant"
-                    trend_symbol = "→"
+                # Growth/Decline based on trend classification in lookback
+                if not gw.empty:
+                    trend, slope, wu, wd = classify_trend(gw["Sales"], min_weeks=min(lookback_weeks, len(gw)))
+                    weeks_up, weeks_down = int(wu), int(wd)
+                    if trend == "Increasing":
+                        stage = "Growth"
+                    elif trend == "Declining":
+                        stage = "Decline"
+                    else:
+                        stage = "Mature"
 
         out.append({
-            **entity,
+            "SKU": sku,
             "Stage": stage,
-            "Trend": trend_symbol,
+            "Trend": trend,
+            "Momentum": mom,
             "Sales (lookback)": sales_lb,
             "Units (lookback)": units_lb,
-            "Last Week Sales": last_w_sales,
-            "WoW Sales Δ": float(wow_sales) if not pd.isna(wow_sales) else np.nan,
+            "First Sale": fw,
+            "Last Sale": lw,
+            "Slope": float(slope),
             "Weeks Up": int(weeks_up),
             "Weeks Down": int(weeks_down),
-            "Weeks With Sales": int(weeks_with_sales),
+            "Last Week Sales": float(last_w_sales),
+            "WoW Sales Δ": float(wow_sales) if not pd.isna(wow_sales) else np.nan,
         })
     out_df = pd.DataFrame(out)
     if not out_df.empty:
-        stage_order = {"Launch": 0, "Growth": 1, "Mature": 2, "Decline": 3, "Dormant": 4, "Inactive 12+ Weeks": 5}
-        out_df["__stage_order"] = out_df["Stage"].map(stage_order).fillna(99)
-        out_df = out_df.sort_values(["__stage_order", "Sales (lookback)"], ascending=[True, False]).drop(columns=["__stage_order"])
+        out_df = out_df.sort_values(["Stage","Momentum","Sales (lookback)"], ascending=[True, False, False])
     return out_df
 
 # -----------------------------
@@ -707,32 +679,6 @@ def pct_fmt(x: float) -> str:
     return f"{x*100:,.1f}%"
 
 
-def month_year_display(period_str: str) -> str:
-    try:
-        return pd.Period(str(period_str), freq="M").strftime("%B %Y")
-    except Exception:
-        return str(period_str)
-
-
-def _display_to_period(label: str) -> str:
-    try:
-        return pd.to_datetime(str(label), format="%B %Y").to_period("M").strftime("%Y-%m")
-    except Exception:
-        return str(label)
-
-
-def signed_money_html(v: float) -> str:
-    color = "#2e7d32" if v > 0 else ("#c62828" if v < 0 else "var(--text-color)")
-    sign = "+" if v > 0 else ""
-    return f"<span style='color:{color}; font-weight:700'>{sign}{money(v)}</span>"
-
-
-def signed_int_html(v: float) -> str:
-    color = "#2e7d32" if v > 0 else ("#c62828" if v < 0 else "var(--text-color)")
-    sign = "+" if v > 0 else ""
-    return f"<span style='color:{color}; font-weight:700'>{sign}{float(v):,.0f}</span>"
-
-
 def kpi_card(label: str, value: str, delta: Optional[str] = None):
     """Theme-safe KPI card.
 
@@ -769,61 +715,24 @@ def biggest_increase_card(label: str, name: str, current_sales: float, previous_
         unsafe_allow_html=True,
     )
 
-def leader_sales_card(label: str, name: str, current_sales: float, previous_sales: float,
-                      current_units: Optional[float] = None, previous_units: Optional[float] = None):
-    sales_delta = float(current_sales) - float(previous_sales)
-    sales_pct = pct_change(float(current_sales), float(previous_sales))
-    sales_color = "#2e7d32" if sales_delta > 0 else ("#c62828" if sales_delta < 0 else "var(--text-color)")
-    sales_arrow = "▲" if sales_delta > 0 else ("▼" if sales_delta < 0 else "•")
-    sales_pct_html = "" if pd.isna(sales_pct) else f'<span class="delta-pct" style="color:{sales_color}">({pct_fmt(sales_pct)})</span>'
-
-    if current_units is None:
-        st.markdown(
-            f"""
-            <div class="kpi-card">
-                <div class="kpi-title">{html.escape(str(label))}</div>
-                <div class="kpi-big-name">{html.escape(str(name))}</div>
-                <div class="kpi-value">{money(float(current_sales))}</div>
-                <div class="kpi-delta" style="color:{sales_color}">
-                    <span class="delta-abs">{sales_arrow} {money(sales_delta)}</span>{sales_pct_html}
-                </div>
-            </div>
-            """,
-            unsafe_allow_html=True,
-        )
-        return
-
-    cur_u = float(current_units)
-    prev_u = float(previous_units or 0.0)
-    units_delta = cur_u - prev_u
-    units_pct = pct_change(cur_u, prev_u)
-    units_color = "#2e7d32" if units_delta > 0 else ("#c62828" if units_delta < 0 else "var(--text-color)")
-    units_arrow = "▲" if units_delta > 0 else ("▼" if units_delta < 0 else "•")
-    units_pct_html = "" if pd.isna(units_pct) else f'<span class="delta-pct" style="color:{units_color}">({pct_fmt(units_pct)})</span>'
-
+def leader_sales_card(label: str, name: str, current_sales: float, previous_sales: float):
+    delta = float(current_sales) - float(previous_sales)
+    pct = pct_change(float(current_sales), float(previous_sales))
+    color = "#2e7d32" if delta > 0 else ("#c62828" if delta < 0 else "var(--text-color)")
+    arrow = "▲" if delta > 0 else ("▼" if delta < 0 else "•")
+    pct_html = "" if pd.isna(pct) else f'<span class="delta-pct" style="color:{color}">({pct_fmt(pct)})</span>'
     st.markdown(
         f"""
         <div class="kpi-card">
-            <div class="kpi-title">{html.escape(str(label))}</div>
+            <div class="kpi-title">{label}</div>
             <div class="kpi-big-name">{html.escape(str(name))}</div>
-            <div style="display:flex; gap:18px; align-items:flex-start;">
-                <div style="flex:1 1 0; min-width:0;">
-                    <div class="kpi-value">{money(float(current_sales))}</div>
-                    <div class="kpi-delta" style="color:{sales_color}">
-                        <span class="delta-abs">{sales_arrow} {money(sales_delta)}</span>{sales_pct_html}
-                    </div>
-                </div>
-                <div style="flex:1 1 0; min-width:0;">
-                    <div class="kpi-value">{cur_u:,.0f}</div>
-                    <div class="kpi-delta" style="color:{units_color}">
-                        <span class="delta-abs">{units_arrow} {units_delta:,.0f}</span>{units_pct_html}
-                    </div>
-                </div>
-            </div>
+            <div class="kpi-value">{money(float(current_sales))}</div>
+            <div class="kpi-delta" style="color:{color}"><span class="delta-abs">{arrow} {money(delta)}</span>{pct_html}</div>
         </div>
         """,
         unsafe_allow_html=True,
     )
+
 
 
 def selection_total_card(label: str, cur_kpi: Dict[str, float], cmp_kpi: Dict[str, float]):
@@ -845,28 +754,6 @@ def selection_total_card(label: str, cur_kpi: Dict[str, float], cmp_kpi: Dict[st
     sales_pct_html = f" ({pct_fmt(sales_pct)})" if not pd.isna(sales_pct) else ""
     units_pct_html = f" ({pct_fmt(units_pct)})" if not pd.isna(units_pct) else ""
 
-    cur_active = float(cur_kpi.get('Active SKUs', 0))
-    cmp_active = float(cmp_kpi.get('Active SKUs', 0))
-    cur_retailers = float(cur_kpi.get('Active Retailers', 0))
-    cmp_retailers = float(cmp_kpi.get('Active Retailers', 0))
-    cur_vendors = float(cur_kpi.get('Active Vendors', 0))
-    cmp_vendors = float(cmp_kpi.get('Active Vendors', 0))
-
-    cur_avg_units = (units / cur_active) if cur_active else 0.0
-    cmp_avg_units = (prev_units / cmp_active) if cmp_active else 0.0
-    cur_avg_sales = (sales / cur_active) if cur_active else 0.0
-    cmp_avg_sales = (prev_sales / cmp_active) if cmp_active else 0.0
-
-    def _inline_delta(cur: float, prev: float, is_money: bool = False, decimals: int = 0) -> str:
-        d = cur - prev
-        color = "#2e7d32" if d > 0 else ("#c62828" if d < 0 else "var(--text-color)")
-        arrow = "▲" if d > 0 else ("▼" if d < 0 else "•")
-        if is_money:
-            txt = money(d)
-        else:
-            txt = f"{d:,.{decimals}f}" if decimals else f"{d:,.0f}"
-        return f"<span style='color:{color}; font-weight:700; margin-left:6px;'>{arrow} {txt}</span>"
-
     st.markdown(
         f"""
         <div class="kpi-card">
@@ -877,8 +764,8 @@ def selection_total_card(label: str, cur_kpi: Dict[str, float], cmp_kpi: Dict[st
             <div class="kpi-sub" style="font-size:12px;opacity:0.75;margin-bottom:2px;">Total Units</div>
             <div class="kpi-sub" style="font-size:16px;font-weight:700;color:var(--text-color);">{units:,.0f}</div>
             <div class="kpi-delta" style="color:{units_color};margin-bottom:8px;">{units_arrow} {units_delta:,.0f}{units_pct_html} &nbsp; • &nbsp; ASP {money(asp)}</div>
-            <div class="kpi-sub" style="margin-top:6px; white-space:normal;">Active SKUs: {int(cur_active):,}{_inline_delta(cur_active, cmp_active)} &nbsp; • &nbsp; Retailers: {int(cur_retailers):,}{_inline_delta(cur_retailers, cmp_retailers)} &nbsp; • &nbsp; Vendors: {int(cur_vendors):,}{_inline_delta(cur_vendors, cmp_vendors)}</div>
-            <div class="kpi-sub" style="margin-top:6px; white-space:normal;">Avg Units / SKU {cur_avg_units:,.1f}{_inline_delta(cur_avg_units, cmp_avg_units, decimals=1)} &nbsp; • &nbsp; Avg Sales / SKU {money(cur_avg_sales)}{_inline_delta(cur_avg_sales, cmp_avg_sales, is_money=True)}</div>
+            <div class="kpi-sub" style="margin-top:6px;">Active SKUs: {int(cur_kpi.get('Active SKUs', 0)):,} &nbsp; • &nbsp; Retailers: {int(cur_kpi.get('Active Retailers', 0)):,} &nbsp; • &nbsp; Vendors: {int(cur_kpi.get('Active Vendors', 0)):,}</div>
+            <div class="kpi-sub" style="margin-top:6px;">Avg Units / SKU {((units / cur_kpi.get('Active SKUs', 0)) if cur_kpi.get('Active SKUs', 0) else 0):,.1f} &nbsp; • &nbsp; Avg Sales / SKU {money((sales / cur_kpi.get('Active SKUs', 0)) if cur_kpi.get('Active SKUs', 0) else 0)}</div>
         </div>
         """,
         unsafe_allow_html=True,
@@ -890,40 +777,19 @@ def top_two_card(label: str, entries: List[dict]):
         name = html.escape(str(item.get("name", "")))
         sales = float(item.get("sales", 0.0))
         other_sales = float(item.get("other_sales", 0.0))
-        units = float(item.get("units", 0.0))
-        other_units = float(item.get("other_units", 0.0))
-        sales_share = float(item.get("sales_share", np.nan))
-        units_share = float(item.get("units_share", np.nan))
-
-        sales_delta = sales - other_sales
-        sales_pct = pct_change(sales, other_sales)
-        sales_color = "#2e7d32" if sales_delta > 0 else ("#c62828" if sales_delta < 0 else "var(--text-color)")
-        sales_arrow = "▲" if sales_delta > 0 else ("▼" if sales_delta < 0 else "•")
-        sales_pct_html = f" ({pct_fmt(sales_pct)})" if not pd.isna(sales_pct) else ""
-        sales_share_html = f"{sales_share*100:,.1f}% share" if not pd.isna(sales_share) else ""
-
-        units_delta = units - other_units
-        units_pct = pct_change(units, other_units)
-        units_color = "#2e7d32" if units_delta > 0 else ("#c62828" if units_delta < 0 else "var(--text-color)")
-        units_arrow = "▲" if units_delta > 0 else ("▼" if units_delta < 0 else "•")
-        units_pct_html = f" ({pct_fmt(units_pct)})" if not pd.isna(units_pct) else ""
-        units_share_html = f"{units_share*100:,.1f}% share" if not pd.isna(units_share) else ""
-
+        share = float(item.get("share", np.nan))
+        delta = sales - other_sales
+        pct = pct_change(sales, other_sales)
+        color = "#2e7d32" if delta > 0 else ("#c62828" if delta < 0 else "var(--text-color)")
+        arrow = "▲" if delta > 0 else ("▼" if delta < 0 else "•")
+        pct_html = f" ({pct_fmt(pct)})" if not pd.isna(pct) else ""
+        share_html = f"{share*100:,.1f}% of total" if not pd.isna(share) else ""
         rows.append(
             f"<div class='top-two-item'>"
             f"<div class='kpi-big-name'>{name}</div>"
-            f"<div style='display:flex; gap:18px; align-items:flex-start;'>"
-            f"  <div style='flex:1 1 0; min-width:0;'>"
-            f"    <div class='kpi-sub' style='font-size:16px;font-weight:700;color:var(--text-color)'>{money(sales)}</div>"
-            f"    <div class='kpi-delta' style='color:{sales_color}'>{sales_arrow} {money(sales_delta)}{sales_pct_html}</div>"
-            f"    <div class='kpi-sub'>{sales_share_html}</div>"
-            f"  </div>"
-            f"  <div style='flex:1 1 0; min-width:0;'>"
-            f"    <div class='kpi-sub' style='font-size:16px;font-weight:700;color:var(--text-color)'>{units:,.0f}</div>"
-            f"    <div class='kpi-delta' style='color:{units_color}'>{units_arrow} {units_delta:,.0f}{units_pct_html}</div>"
-            f"    <div class='kpi-sub'>{units_share_html}</div>"
-            f"  </div>"
-            f"</div>"
+            f"<div class='kpi-sub' style='font-size:16px;font-weight:700;color:var(--text-color)'>{money(sales)}</div>"
+            f"<div class='kpi-delta' style='color:{color}'>{arrow} {money(delta)}{pct_html}</div>"
+            f"<div class='kpi-sub'>{share_html}</div>"
             f"</div>"
         )
     if not rows:
@@ -944,13 +810,14 @@ def count_sales_card(label: str, count_value: int, sales_value: float, color: st
         sales_txt = "+" + sales_txt
     elif signed_sales and sales_value < 0:
         sales_txt = "-" + sales_txt
-    pct_html = "" if pd.isna(pct) else f'<span style="margin-left:10px; color:{color}; font-weight:700;">({pct_fmt(pct)})</span>'
+    pct_html = "" if pd.isna(pct) else f'<div class="kpi-delta" style="color:{color}">({pct_fmt(pct)})</div>'
     st.markdown(
         f"""
         <div class="kpi-card">
             <div class="kpi-title">{label}</div>
             <div class="kpi-value" style="color:{color}">{count_value:,}</div>
-            <div class="kpi-sub" style="color:{color}; display:flex; align-items:center; gap:8px; flex-wrap:wrap;">Sales: <span style="font-weight:700;">{sales_txt}</span>{pct_html}</div>
+            <div class="kpi-sub" style="color:{color}">Sales: {sales_txt}</div>
+            {pct_html}
         </div>
         """,
         unsafe_allow_html=True,
@@ -958,76 +825,6 @@ def count_sales_card(label: str, count_value: int, sales_value: float, color: st
 
 def render_df(df: pd.DataFrame, height: int = 320):
     st.dataframe(df, use_container_width=True, height=height, hide_index=True)
-
-
-@st.cache_data(show_spinner=False)
-def build_weekly_detail_table_cached(
-    d_in: pd.DataFrame,
-    pivot_dim: str,
-    metric_col: str,
-    weeks_to_show: int,
-    avg_basis: str,
-) -> pd.DataFrame:
-    """Build the weekly detail table with independent display + average windows.
-
-    Cached so the Standard Intelligence tab feels much faster when changing other controls.
-    """
-    d = d_in.copy()
-    if d.empty or pivot_dim not in d.columns or metric_col not in d.columns:
-        return pd.DataFrame(columns=[pivot_dim, "Δ vs prior week", "Average Value", "Current vs Avg"])
-
-    d["WeekEnd"] = pd.to_datetime(d["WeekEnd"], errors="coerce")
-    d = d[d["WeekEnd"].notna()].copy()
-    if d.empty:
-        return pd.DataFrame(columns=[pivot_dim, "Δ vs prior week", "Average Value", "Current vs Avg"])
-
-    all_weeks = sorted(pd.to_datetime(d["WeekEnd"].dropna().unique()).tolist())
-    if not all_weeks:
-        return pd.DataFrame(columns=[pivot_dim, "Δ vs prior week", "Average Value", "Current vs Avg"])
-
-    weeks_to_show = int(max(1, weeks_to_show))
-    display_weeks = all_weeks[-weeks_to_show:]
-
-    wk_vals = d.groupby([pivot_dim, "WeekEnd"], as_index=False).agg(Value=(metric_col, "sum"))
-    wk_vals = wk_vals[wk_vals["WeekEnd"].isin(display_weeks)].copy()
-    wk_vals["Week"] = wk_vals["WeekEnd"].dt.strftime("%Y-%m-%d")
-    piv = wk_vals.pivot_table(index=pivot_dim, columns="Week", values="Value", aggfunc="sum", fill_value=0.0)
-    piv = piv.reindex(sorted(piv.index.tolist()))
-
-    avg_source = d.groupby([pivot_dim, "WeekEnd"], as_index=False).agg(Value=(metric_col, "sum"))
-    avg_source["WeekEnd"] = pd.to_datetime(avg_source["WeekEnd"], errors="coerce")
-
-    avg_weeks = []
-    if isinstance(avg_basis, str) and avg_basis.endswith("weeks"):
-        try:
-            avg_n = int(str(avg_basis).split()[0])
-        except Exception:
-            avg_n = 8
-        avg_weeks = all_weeks[-avg_n:]
-    else:
-        avg_period = _display_to_period(avg_basis)
-        avg_source = avg_source[avg_source["WeekEnd"].dt.to_period("M").astype(str) == str(avg_period)].copy()
-        avg_weeks = sorted(pd.to_datetime(avg_source["WeekEnd"].dropna().unique()).tolist())
-
-    if avg_weeks:
-        avg_source = avg_source[avg_source["WeekEnd"].isin(avg_weeks)].copy()
-        avg_tbl = avg_source.groupby(pivot_dim, as_index=False).agg(**{"Average Value": ("Value", "mean")})
-    else:
-        avg_tbl = pd.DataFrame(columns=[pivot_dim, "Average Value"])
-
-    out = piv.reset_index().merge(avg_tbl, on=pivot_dim, how="left")
-    out["Average Value"] = pd.to_numeric(out["Average Value"], errors="coerce").fillna(0.0)
-
-    last_key = display_weeks[-1].strftime("%Y-%m-%d") if display_weeks else None
-    prev_key = display_weeks[-2].strftime("%Y-%m-%d") if len(display_weeks) >= 2 else None
-    last_vals = pd.to_numeric(out.get(last_key, 0.0), errors="coerce").fillna(0.0) if last_key else 0.0
-    prev_vals = pd.to_numeric(out.get(prev_key, 0.0), errors="coerce").fillna(0.0) if prev_key else 0.0
-    out["Δ vs prior week"] = last_vals - prev_vals
-    out["Current vs Avg"] = last_vals - out["Average Value"]
-
-    ordered_cols = [pivot_dim] + [w.strftime("%Y-%m-%d") for w in display_weeks] + ["Δ vs prior week", "Average Value", "Current vs Avg"]
-    out = out[[c for c in ordered_cols if c in out.columns]].copy()
-    return out
 
 
 def render_data_management_center(vm: pd.DataFrame, store: pd.DataFrame):
@@ -1435,9 +1232,9 @@ def run_app():
             m = a.merge(b, on=level, how="outer", suffixes=("_A","_B")).fillna(0.0)
             if m.empty:
                 return None
-            m = m.sort_values(["Sales_A", level], ascending=[False, True])
+            m = m.sort_values("Sales_A", ascending=False)
             row = m.iloc[0]
-            return str(row[level]), float(row["Sales_A"]), float(row["Sales_B"]), float(row.get("Units_A", 0.0)), float(row.get("Units_B", 0.0))
+            return str(row[level]), float(row["Sales_A"]), float(row["Sales_B"])
 
         def _top_by_increase(level: str):
             a = dfA.groupby(level, as_index=False).agg(Sales=("Sales","sum"))
@@ -1523,9 +1320,9 @@ def run_app():
     headline_bits = []
     if compare_mode != "None":
         headline_bits.append(f"Sales {('up' if sales_delta >= 0 else 'down')} **{money(abs(sales_delta))}** vs comparison.")
-        headline_bits.append(f"Units {('up' if units_delta >= 0 else 'down')} **{abs(units_delta):,.0f}** to **{kA['Units']:,.0f}** total.")
+        headline_bits.append(f"Units {('up' if units_delta >= 0 else 'down')} **{abs(units_delta):,.0f}**.")
         if not np.isnan(asp_delta):
-            headline_bits.append(f"ASP {('up' if asp_delta >= 0 else 'down')} **{money(abs(asp_delta))}** to **{money(aspA)}**.")
+            headline_bits.append(f"ASP {('up' if asp_delta >= 0 else 'down')} **{money(abs(asp_delta))}**.")
         if not top_pos.empty:
             headline_bits.append(f"Top driver: **{top_pos.iloc[0][driver_level]}** ({money(float(top_pos.iloc[0]['Sales_Δ']))}).")
         if not top_neg.empty:
@@ -1588,26 +1385,21 @@ def run_app():
     def _top_two_with_compare(df_sel: pd.DataFrame, df_other: pd.DataFrame, level: str):
         if df_sel.empty:
             return []
-        cur = df_sel.groupby(level, as_index=False).agg(Sales=("Sales", "sum"), Units=("Units", "sum"))
-        oth = df_other.groupby(level, as_index=False).agg(Other_Sales=("Sales", "sum"), Other_Units=("Units", "sum")) if not df_other.empty else pd.DataFrame(columns=[level, "Other_Sales", "Other_Units"])
+        cur = df_sel.groupby(level, as_index=False).agg(Sales=("Sales", "sum"))
+        oth = df_other.groupby(level, as_index=False).agg(Other_Sales=("Sales", "sum")) if not df_other.empty else pd.DataFrame(columns=[level, "Other_Sales"])
         m = cur.merge(oth, on=level, how="left").fillna(0.0)
         if m.empty:
             return []
         total_sales = float(m["Sales"].sum())
-        total_units = float(m["Units"].sum())
         m = m.sort_values(["Sales", level], ascending=[False, True]).head(2)
         out = []
         for _, r in m.iterrows():
             sales = float(r["Sales"])
-            units = float(r.get("Units", 0.0))
             out.append({
                 "name": str(r[level]),
                 "sales": sales,
-                "other_sales": float(r.get("Other_Sales", 0.0)),
-                "units": units,
-                "other_units": float(r.get("Other_Units", 0.0)),
-                "sales_share": (sales / total_sales) if total_sales else np.nan,
-                "units_share": (units / total_units) if total_units else np.nan,
+                "other_sales": float(r["Other_Sales"]),
+                "share": (sales / total_sales) if total_sales else np.nan,
             })
         return out
     
@@ -1630,9 +1422,9 @@ def run_app():
 
         cur_sku = dfA.groupby("SKU", as_index=False).agg(Sales=("Sales","sum"), Units=("Units","sum"))
         cmp_sku = dfB.groupby("SKU", as_index=False).agg(Sales=("Sales","sum"), Units=("Units","sum"))
-        cur_only = cur_sku.merge(cmp_sku[["SKU","Sales","Units"]].rename(columns={"Sales":"Compare_Sales", "Units":"Compare_Units"}), on="SKU", how="left").fillna(0.0)
+        cur_only = cur_sku.merge(cmp_sku[["SKU","Sales"]].rename(columns={"Sales":"Compare_Sales"}), on="SKU", how="left").fillna(0.0)
         cur_only = cur_only[(cur_only["Sales"] > 0) & (cur_only["Compare_Sales"] <= 0)].copy()
-        cmp_only = cmp_sku.merge(cur_sku[["SKU","Sales","Units"]].rename(columns={"Sales":"Current_Sales", "Units":"Current_Units"}), on="SKU", how="left").fillna(0.0)
+        cmp_only = cmp_sku.merge(cur_sku[["SKU","Sales"]].rename(columns={"Sales":"Current_Sales"}), on="SKU", how="left").fillna(0.0)
         cmp_only = cmp_only[(cmp_only["Sales"] > 0) & (cmp_only["Current_Sales"] <= 0)].copy()
         new_count = int(len(cur_only)); new_sales = float(cur_only["Sales"].sum())
         lost_count = int(len(cmp_only)); lost_sales = float(cmp_only["Sales"].sum())
@@ -1772,11 +1564,11 @@ def run_app():
         tV = _top_by_current("Vendor")
         tS = _top_by_current("SKU")
         with r1c1:
-            if tR: leader_sales_card("Top Retailer (Sales)", tR[0], tR[1], tR[2], tR[3], tR[4])
+            if tR: leader_sales_card("Top Retailer (Sales)", tR[0], tR[1], tR[2])
         with r1c2:
-            if tV: leader_sales_card("Top Vendor (Sales)", tV[0], tV[1], tV[2], tV[3], tV[4])
+            if tV: leader_sales_card("Top Vendor (Sales)", tV[0], tV[1], tV[2])
         with r1c3:
-            if tS: leader_sales_card("Top SKU (Sales)", tS[0], tS[1], tS[2], tS[3], tS[4])
+            if tS: leader_sales_card("Top SKU (Sales)", tS[0], tS[1], tS[2])
     
         r2c1, r2c2, r2c3 = st.columns(3)
         iR = _top_by_increase("Retailer")
@@ -1825,38 +1617,35 @@ def run_app():
     
     if analysis_view == "Month / Year Compare":
         st.subheader("Current Only / Compare Only Activity")
-        fe_cur = first_sale_ever(df_hist_for_new, pA)
-        fe_cmp = first_sale_ever(df_hist_for_new, pB) if pB is not None else pd.DataFrame()
-        pl_cur = new_placement(df_hist_for_new, pA)
-        pl_cmp = new_placement(df_hist_for_new, pB) if pB is not None else pd.DataFrame()
-        cur_s = dfA.groupby("SKU", as_index=False).agg(Current_Sales=("Sales","sum"))
-        cmp_s = dfB.groupby("SKU", as_index=False).agg(Compare_Sales=("Sales","sum"))
+        cur_s = dfA.groupby("SKU", as_index=False).agg(Current_Units=("Units", "sum"), Current_Sales=("Sales", "sum"))
+        cmp_s = dfB.groupby("SKU", as_index=False).agg(Compare_Units=("Units", "sum"), Compare_Sales=("Sales", "sum")) if pB is not None else pd.DataFrame(columns=["SKU", "Compare_Units", "Compare_Sales"])
+
         lost = cmp_s.merge(cur_s, on="SKU", how="left").fillna(0.0)
-        lost = lost[(lost["Compare_Sales"] > 0) & (lost["Current_Sales"] <= 0)].copy().sort_values("Compare_Sales", ascending=False)
-    
+        lost = lost[(lost["Compare_Sales"] > 0) & (lost["Current_Sales"] <= 0)].copy().sort_values(["Compare_Sales", "Compare_Units"], ascending=[False, False])
+
+        new_act = cur_s.merge(cmp_s, on="SKU", how="left").fillna(0.0)
+        new_act = new_act[(new_act["Current_Sales"] > 0) & (new_act["Compare_Sales"] <= 0)].copy().sort_values(["Current_Sales", "Current_Units"], ascending=[False, False])
+
         a1, a2 = st.columns(2)
         with a1:
-            st.markdown(f"**First Ever Sales — {a_lbl}**")
-            if fe_cur.empty: st.caption("None.")
-            else: render_df(fe_cur[["SKU","FirstWeek","FirstRetailer","FirstVendor"]].rename(columns={"FirstWeek":"First Week","FirstRetailer":"Retailer","FirstVendor":"Vendor"}), height=240)
-            st.markdown(f"**New Placements — {a_lbl}**")
-            if pl_cur.empty: st.caption("None.")
-            else: render_df(pl_cur[["SKU","Retailer","FirstWeek","Vendor"]].rename(columns={"FirstWeek":"First Week"}), height=240)
+            st.markdown("**Lost Activity — sold in compare, zero in current**")
+            if lost.empty:
+                st.caption("None.")
+            else:
+                show_lost = lost[["SKU", "Compare_Units", "Compare_Sales"]].rename(columns={"Compare_Units": "Units", "Compare_Sales": "Sales"}).copy()
+                show_lost["Units"] = show_lost["Units"].map(lambda v: f"{float(v):,.0f}")
+                show_lost["Sales"] = show_lost["Sales"].map(money)
+                render_df(show_lost, height=320)
         with a2:
-            st.markdown(f"**First Ever Sales — {b_lbl}**")
-            if fe_cmp.empty: st.caption("None.")
-            else: render_df(fe_cmp[["SKU","FirstWeek","FirstRetailer","FirstVendor"]].rename(columns={"FirstWeek":"First Week","FirstRetailer":"Retailer","FirstVendor":"Vendor"}), height=240)
-            st.markdown(f"**New Placements — {b_lbl}**")
-            if pl_cmp.empty: st.caption("None.")
-            else: render_df(pl_cmp[["SKU","Retailer","FirstWeek","Vendor"]].rename(columns={"FirstWeek":"First Week"}), height=240)
-    
-        st.markdown("**Lost Activity — sold in compare, zero in current**")
-        if lost.empty: st.caption("None.")
-        else:
-            show_lost = lost[["SKU","Compare_Sales"]].rename(columns={"Compare_Sales":"Compare Sales"}).copy()
-            show_lost["Compare Sales"] = show_lost["Compare Sales"].map(money)
-            render_df(show_lost, height=280)
-    
+            st.markdown("**New Activity — sold in current, zero in compare**")
+            if new_act.empty:
+                st.caption("None.")
+            else:
+                show_new = new_act[["SKU", "Current_Units", "Current_Sales"]].rename(columns={"Current_Units": "Units", "Current_Sales": "Sales"}).copy()
+                show_new["Units"] = show_new["Units"].map(lambda v: f"{float(v):,.0f}")
+                show_new["Sales"] = show_new["Sales"].map(money)
+                render_df(show_new, height=320)
+
         st.divider()
         st.subheader("Comparison Detail")
         pivot_dim = st.selectbox("Compare rows by", options=["Retailer","Vendor"], index=0, key="multi_compare_dim")
@@ -1909,59 +1698,6 @@ def run_app():
         comp["Units"] = comp["Units"].map(lambda v: f"{float(v):,.0f}")
         render_df(comp, height=360)
     else:
-        st.divider()
-        st.subheader("Weekly Detail (Retailer/Vendor x Weeks)")
-        weekly_hist = df_scope[df_scope["WeekEnd"] <= pA.end].copy()
-        with st.expander("Advanced settings — Weekly Detail", expanded=False):
-            wd1, wd2, wd3, wd4 = st.columns(4)
-            with wd1:
-                pivot_dim = st.selectbox("Pivot rows by", options=["Retailer","Vendor"], index=0, key="weekly_pivot_dim")
-            with wd2:
-                weekly_metric = st.selectbox("Metric", options=["Sales","Units"], index=0, key="weekly_metric")
-            with wd3:
-                weekly_weeks_to_show = st.selectbox("Weeks displayed", options=[4,8,12,26,52], index=2, key="weekly_weeks_to_show")
-            month_periods = available_month_labels(weekly_hist)
-            avg_options = ["4 weeks","8 weeks","12 weeks","26 weeks","52 weeks"] + [month_year_display(p) for p in month_periods]
-            default_avg_index = avg_options.index("8 weeks") if "8 weeks" in avg_options else 0
-            with wd4:
-                weekly_avg_basis = st.selectbox("Average basis", options=avg_options, index=default_avg_index, key="weekly_avg_basis")
-        d = weekly_hist.copy(); d = d[(d["Sales"] >= min_sales) | (d["Units"] >= min_units)].copy()
-        if d.empty: st.caption("No rows match the current thresholds.")
-        else:
-            metric_col = "Sales" if weekly_metric == "Sales" else "Units"
-            piv = build_weekly_detail_table_cached(
-                d[[c for c in [pivot_dim, "WeekEnd", "Sales", "Units"] if c in d.columns]].copy(),
-                pivot_dim=pivot_dim,
-                metric_col=metric_col,
-                weeks_to_show=int(weekly_weeks_to_show),
-                avg_basis=weekly_avg_basis,
-            )
-            week_cols = [c for c in piv.columns if c not in [pivot_dim, "Δ vs prior week", "Average Value", "Current vs Avg"]]
-
-            fmt_value = (lambda v: money(float(v))) if metric_col == "Sales" else (lambda v: f"{float(v):,.0f}")
-            piv_disp = piv.copy()
-            for c in week_cols + ["Average Value", "Δ vs prior week", "Current vs Avg"]:
-                if c in piv_disp.columns:
-                    piv_disp[c] = pd.to_numeric(piv_disp[c], errors="coerce").fillna(0.0)
-                    piv_disp[c] = piv_disp[c].map(fmt_value)
-
-            def _posneg_str(v):
-                try:
-                    x = float(str(v).replace('$','').replace(',',''))
-                except Exception:
-                    return ""
-                if x > 0:
-                    return "color:#2e7d32; font-weight:700;"
-                if x < 0:
-                    return "color:#c62828; font-weight:700;"
-                return ""
-
-            sty = piv_disp.style
-            for c in ["Δ vs prior week", "Current vs Avg"]:
-                if c in piv_disp.columns:
-                    sty = sty.applymap(_posneg_str, subset=[c])
-            st.dataframe(sty, use_container_width=True, hide_index=True, height=_table_height(piv_disp, max_px=650))
-
         # original standard view sections
         st.subheader("New Activity")
         a,b = st.columns(2)
@@ -2018,6 +1754,26 @@ def run_app():
             for c in ["Total Sales","Last Week Sales","WoW Sales Δ"]: show[c] = show[c].map(lambda v: "" if pd.isna(v) else money(float(v)))
             show["Total Units"] = show["Total Units"].map(lambda v: f"{float(v):,.0f}")
             render_df(show.sort_values(["Type","Start Week","SKU"], ascending=[True, False, True]), height=320)
+        st.divider()
+        st.subheader("Weekly Detail (Retailer/Vendor x Weeks)")
+        d = dfA.copy(); d = d[(d["Sales"] >= min_sales) | (d["Units"] >= min_units)].copy()
+        if d.empty: st.caption("No rows match the current thresholds.")
+        else:
+            pivot_dim = st.selectbox("Pivot rows by", options=["Retailer","Vendor"], index=0, key="weekly_pivot_dim")
+            wk_sales = d.groupby([pivot_dim,"WeekEnd"], as_index=False).agg(Sales=("Sales","sum"))
+            wk_sales["WeekEnd"] = pd.to_datetime(wk_sales["WeekEnd"], errors="coerce")
+            weeks = sorted([pd.to_datetime(x) for x in wk_sales["WeekEnd"].dropna().unique().tolist()])
+            wk_sales["Week"] = wk_sales["WeekEnd"].dt.date.astype(str)
+            piv = wk_sales.pivot_table(index=pivot_dim, columns="Week", values="Sales", aggfunc="sum", fill_value=0.0)
+            piv = piv.reindex(sorted(piv.index.tolist()))
+            if len(weeks) >= 2:
+                w_last = str(weeks[-1].date()); w_prev = str(weeks[-2].date()); piv["Δ vs prior week"] = piv.get(w_last, 0.0) - piv.get(w_prev, 0.0)
+            else: piv["Δ vs prior week"] = 0.0
+            piv_disp = piv.copy()
+            for c in piv_disp.columns:
+                if c == "Δ vs prior week": piv_disp[c] = piv_disp[c].map(lambda x: ("+" if x > 0 else "") + money(x))
+                else: piv_disp[c] = piv_disp[c].map(money)
+            piv_disp = piv_disp.reset_index(); render_df(piv_disp, height=320)
         st.subheader("Movers & Trend Leaders")
         if compare_mode == "None": st.info("Select a comparison mode to compute increasing/declining vs the compare period.")
         else:
@@ -2052,133 +1808,95 @@ def run_app():
         st.header("Strategic Intelligence")
     
         # A) Contribution Tree
+        
+        # A) Contribution Tree
         st.subheader("1) Contribution Tree (Where did change come from?)")
         if compare_mode == "None":
             st.info("Select a comparison mode to use the contribution tree.")
         else:
             sales_a_col = f"Sales ({a_lbl})"
             sales_b_col = f"Sales ({b_lbl})" if b_lbl else "Sales (Comparison)"
-            level1_mode = st.selectbox("Level 1 view", options=["Retailer","Vendor"], index=0, key="strategic_lvl1_mode")
-
-            if level1_mode == "Retailer":
-                lvl1 = drivers(dfA, dfB, "Retailer").sort_values("Sales_Δ", ascending=False)
-                st.markdown("**Level 1 — Retailers**")
-                lvl1_disp = lvl1[["Retailer","Sales_A","Sales_B","Sales_Δ","Contribution_%"]].copy()
-                lvl1_disp["Sales_A"] = lvl1_disp["Sales_A"].map(money)
-                lvl1_disp["Sales_B"] = lvl1_disp["Sales_B"].map(money)
-                lvl1_disp["Sales_Δ"] = lvl1_disp["Sales_Δ"].map(money)
-                lvl1_disp["Contribution_%"] = lvl1_disp["Contribution_%"].map(pct_fmt)
-                lvl1_disp = rename_ab_columns(lvl1_disp, a_lbl, b_lbl)
-                render_df(lvl1_disp[["Retailer", sales_a_col, sales_b_col, "Sales_Δ", "Contribution_%"]], height=260)
-
-                pick_r = st.selectbox("Drill into Retailer", options=["(none)"] + sorted(lvl1["Retailer"].astype(str).tolist()), index=0, key="strategic_pick_retailer")
-                if pick_r != "(none)":
-                    dfA_r = dfA[dfA["Retailer"] == pick_r].copy()
-                    dfB_r = dfB[dfB["Retailer"] == pick_r].copy()
-
-                    lvl2 = drivers(dfA_r, dfB_r, "Vendor").sort_values("Sales_Δ", ascending=False)
-                    st.markdown(f"**Level 2 — Vendors inside {pick_r}**")
-                    lvl2_disp = lvl2[["Vendor","Sales_A","Sales_B","Sales_Δ","Contribution_%"]].copy()
-                    lvl2_disp["Sales_A"] = lvl2_disp["Sales_A"].map(money)
-                    lvl2_disp["Sales_B"] = lvl2_disp["Sales_B"].map(money)
-                    lvl2_disp["Sales_Δ"] = lvl2_disp["Sales_Δ"].map(money)
-                    lvl2_disp["Contribution_%"] = lvl2_disp["Contribution_%"].map(pct_fmt)
-                    lvl2_disp = rename_ab_columns(lvl2_disp, a_lbl, b_lbl)
-                    render_df(lvl2_disp[["Vendor", sales_a_col, sales_b_col, "Sales_Δ", "Contribution_%"]], height=240)
-
-                    pick_v = st.selectbox("Drill into Vendor", options=["(none)"] + sorted(lvl2["Vendor"].astype(str).tolist()), index=0, key="strategic_pick_vendor")
-                    if pick_v != "(none)":
-                        dfA_v = dfA_r[dfA_r["Vendor"] == pick_v].copy()
-                        dfB_v = dfB_r[dfB_r["Vendor"] == pick_v].copy()
-
-                        lvl3 = drivers(dfA_v, dfB_v, "SKU").sort_values("Sales_Δ", ascending=False)
-                        st.markdown(f"**Level 3 — SKUs inside {pick_r} → {pick_v}**")
-                        lvl3_disp = lvl3[["SKU","Sales_A","Sales_B","Sales_Δ","Contribution_%"]].copy()
-                        lvl3_disp["Sales_A"] = lvl3_disp["Sales_A"].map(money)
-                        lvl3_disp["Sales_B"] = lvl3_disp["Sales_B"].map(money)
-                        lvl3_disp["Sales_Δ"] = lvl3_disp["Sales_Δ"].map(money)
-                        lvl3_disp["Contribution_%"] = lvl3_disp["Contribution_%"].map(pct_fmt)
-                        lvl3_disp = rename_ab_columns(lvl3_disp, a_lbl, b_lbl)
-                        render_df(lvl3_disp[["SKU", sales_a_col, sales_b_col, "Sales_Δ", "Contribution_%"]], height=240)
-            else:
-                lvl1 = drivers(dfA, dfB, "Vendor").sort_values("Sales_Δ", ascending=False)
-                st.markdown("**Level 1 — Vendors**")
-                lvl1_disp = lvl1[["Vendor","Sales_A","Sales_B","Sales_Δ","Contribution_%"]].copy()
-                lvl1_disp["Sales_A"] = lvl1_disp["Sales_A"].map(money)
-                lvl1_disp["Sales_B"] = lvl1_disp["Sales_B"].map(money)
-                lvl1_disp["Sales_Δ"] = lvl1_disp["Sales_Δ"].map(money)
-                lvl1_disp["Contribution_%"] = lvl1_disp["Contribution_%"].map(pct_fmt)
-                lvl1_disp = rename_ab_columns(lvl1_disp, a_lbl, b_lbl)
-                render_df(lvl1_disp[["Vendor", sales_a_col, sales_b_col, "Sales_Δ", "Contribution_%"]], height=260)
-
-                pick_v = st.selectbox("Drill into Vendor", options=["(none)"] + sorted(lvl1["Vendor"].astype(str).tolist()), index=0, key="strategic_pick_vendor_lvl1")
+    
+            # Level 1: Retailers
+            lvl1 = drivers(dfA, dfB, "Retailer").sort_values("Sales_Δ", ascending=False)
+            st.markdown("**Level 1 — Retailers**")
+            lvl1_disp = lvl1[["Retailer","Sales_A","Sales_B","Sales_Δ","Contribution_%"]].copy()
+            lvl1_disp["Sales_A"] = lvl1_disp["Sales_A"].map(money)
+            lvl1_disp["Sales_B"] = lvl1_disp["Sales_B"].map(money)
+            lvl1_disp["Sales_Δ"] = lvl1_disp["Sales_Δ"].map(money)
+            lvl1_disp["Contribution_%"] = lvl1_disp["Contribution_%"].map(pct_fmt)
+            lvl1_disp = rename_ab_columns(lvl1_disp, a_lbl, b_lbl)
+            render_df(lvl1_disp[["Retailer", sales_a_col, sales_b_col, "Sales_Δ", "Contribution_%"]], height=260)
+    
+            pick_r = st.selectbox("Drill into Retailer", options=["(none)"] + sorted(lvl1["Retailer"].astype(str).tolist()), index=0)
+            if pick_r != "(none)":
+                dfA_r = dfA[dfA["Retailer"] == pick_r].copy()
+                dfB_r = dfB[dfB["Retailer"] == pick_r].copy()
+    
+                lvl2 = drivers(dfA_r, dfB_r, "Vendor").sort_values("Sales_Δ", ascending=False)
+                st.markdown(f"**Level 2 — Vendors inside {pick_r}**")
+                lvl2_disp = lvl2[["Vendor","Sales_A","Sales_B","Sales_Δ","Contribution_%"]].copy()
+                lvl2_disp["Sales_A"] = lvl2_disp["Sales_A"].map(money)
+                lvl2_disp["Sales_B"] = lvl2_disp["Sales_B"].map(money)
+                lvl2_disp["Sales_Δ"] = lvl2_disp["Sales_Δ"].map(money)
+                lvl2_disp["Contribution_%"] = lvl2_disp["Contribution_%"].map(pct_fmt)
+                lvl2_disp = rename_ab_columns(lvl2_disp, a_lbl, b_lbl)
+                render_df(lvl2_disp[["Vendor", sales_a_col, sales_b_col, "Sales_Δ", "Contribution_%"]], height=240)
+    
+                pick_v = st.selectbox("Drill into Vendor", options=["(none)"] + sorted(lvl2["Vendor"].astype(str).tolist()), index=0)
                 if pick_v != "(none)":
-                    dfA_v = dfA[dfA["Vendor"] == pick_v].copy()
-                    dfB_v = dfB[dfB["Vendor"] == pick_v].copy()
-
-                    lvl2 = drivers(dfA_v, dfB_v, "Retailer").sort_values("Sales_Δ", ascending=False)
-                    st.markdown(f"**Level 2 — Retailers inside {pick_v}**")
-                    lvl2_disp = lvl2[["Retailer","Sales_A","Sales_B","Sales_Δ","Contribution_%"]].copy()
-                    lvl2_disp["Sales_A"] = lvl2_disp["Sales_A"].map(money)
-                    lvl2_disp["Sales_B"] = lvl2_disp["Sales_B"].map(money)
-                    lvl2_disp["Sales_Δ"] = lvl2_disp["Sales_Δ"].map(money)
-                    lvl2_disp["Contribution_%"] = lvl2_disp["Contribution_%"].map(pct_fmt)
-                    lvl2_disp = rename_ab_columns(lvl2_disp, a_lbl, b_lbl)
-                    render_df(lvl2_disp[["Retailer", sales_a_col, sales_b_col, "Sales_Δ", "Contribution_%"]], height=240)
-
-                    pick_r = st.selectbox("Drill into Retailer", options=["(none)"] + sorted(lvl2["Retailer"].astype(str).tolist()), index=0, key="strategic_pick_retailer_lvl2")
-                    if pick_r != "(none)":
-                        dfA_r = dfA_v[dfA_v["Retailer"] == pick_r].copy()
-                        dfB_r = dfB_v[dfB_v["Retailer"] == pick_r].copy()
-                        lvl3 = drivers(dfA_r, dfB_r, "SKU").sort_values("Sales_Δ", ascending=False)
-                        st.markdown(f"**Level 3 — SKUs inside {pick_v} → {pick_r}**")
-                        lvl3_disp = lvl3[["SKU","Sales_A","Sales_B","Sales_Δ","Contribution_%"]].copy()
-                        lvl3_disp["Sales_A"] = lvl3_disp["Sales_A"].map(money)
-                        lvl3_disp["Sales_B"] = lvl3_disp["Sales_B"].map(money)
-                        lvl3_disp["Sales_Δ"] = lvl3_disp["Sales_Δ"].map(money)
-                        lvl3_disp["Contribution_%"] = lvl3_disp["Contribution_%"].map(pct_fmt)
-                        lvl3_disp = rename_ab_columns(lvl3_disp, a_lbl, b_lbl)
-                        render_df(lvl3_disp[["SKU", sales_a_col, sales_b_col, "Sales_Δ", "Contribution_%"]], height=240)
+                    dfA_v = dfA_r[dfA_r["Vendor"] == pick_v].copy()
+                    dfB_v = dfB_r[dfB_r["Vendor"] == pick_v].copy()
+    
+                    lvl3 = drivers(dfA_v, dfB_v, "SKU").sort_values("Sales_Δ", ascending=False)
+                    st.markdown(f"**Level 3 — SKUs inside {pick_r} → {pick_v}**")
+                    lvl3_disp = lvl3[["SKU","Sales_A","Sales_B","Sales_Δ","Contribution_%"]].copy()
+                    lvl3_disp["Sales_A"] = lvl3_disp["Sales_A"].map(money)
+                    lvl3_disp["Sales_B"] = lvl3_disp["Sales_B"].map(money)
+                    lvl3_disp["Sales_Δ"] = lvl3_disp["Sales_Δ"].map(money)
+                    lvl3_disp["Contribution_%"] = lvl3_disp["Contribution_%"].map(pct_fmt)
+                    lvl3_disp = rename_ab_columns(lvl3_disp, a_lbl, b_lbl)
+                    render_df(lvl3_disp[["SKU", sales_a_col, sales_b_col, "Sales_Δ", "Contribution_%"]], height=240)
         st.subheader("2) SKU Lifecycle (Launch → Growth → Mature → Decline → Dormant)")
         life_df_src = df_hist_for_new if show_full_history_lifecycle else df_scope
-        lc1, lc2, lc3 = st.columns([1.25, 1, 1])
-        with lc1:
-            lifecycle_scope = st.selectbox("Lifecycle scope", options=["SKU (All Retailers)", "SKU by Retailer"], index=0, key="lifecycle_scope")
-        with lc2:
-            lifecycle_lookback = st.selectbox("Lookback weeks", options=[4, 6, 8, 12, 26, 52], index=2, key="lifecycle_lookback")
-        stage_options = ["Launch", "Growth", "Mature", "Decline", "Dormant", "Inactive 12+ Weeks"]
-        with lc3:
-            lifecycle_stage_filter = st.multiselect("Stages", options=stage_options, default=stage_options, key="lifecycle_stage_filter")
-
-        life = lifecycle_table(life_df_src, pA, lookback_weeks=int(lifecycle_lookback), scope=lifecycle_scope)
+        life = lifecycle_table(life_df_src, pA, lookback_weeks=8)
         if life.empty:
             st.caption("Not enough data to compute lifecycle.")
         else:
-            life_show = life.copy()
-            if lifecycle_stage_filter:
-                life_show = life_show[life_show["Stage"].isin(lifecycle_stage_filter)].copy()
-            if min_sales > 0:
-                life_show = life_show[life_show["Sales (lookback)"] >= min_sales].copy()
-
-            stage_counts = life_show["Stage"].value_counts().reindex(stage_options, fill_value=0).reset_index()
-            stage_counts.columns = ["Stage", "Count"]
-            st.markdown("**Stage Summary**")
-            render_df(stage_counts, height=220)
-
-            st.markdown("**Lifecycle Detail**")
-            if life_show.empty:
-                st.caption("No lifecycle rows match the current stage/threshold filters.")
-            else:
+            # small stage summary
+            stage_counts = life["Stage"].value_counts().reset_index()
+            stage_counts.columns = ["Stage","Count"]
+            left,right = st.columns([1,2])
+            with left:
+                st.markdown("**Stage Summary**")
+                render_df(stage_counts, height=220)
+            with right:
+                st.markdown("**Lifecycle Detail (trend + momentum + recent change)**")
+                life_show = life.copy()
+                if min_sales > 0:
+                    life_show = life_show[life_show["Sales (lookback)"] >= min_sales].copy()
+    
+                # Pretty formatting
                 life_show["Sales (lookback)"] = life_show["Sales (lookback)"].map(money)
                 life_show["Units (lookback)"] = life_show["Units (lookback)"].map(lambda v: f"{v:,.0f}")
                 life_show["Last Week Sales"] = life_show["Last Week Sales"].map(money)
                 life_show["WoW Sales Δ"] = life_show["WoW Sales Δ"].map(lambda v: "" if pd.isna(v) else money(v))
-                cols = ["Retailer", "SKU", "Stage", "Trend", "Sales (lookback)", "Units (lookback)", "Last Week Sales", "WoW Sales Δ", "Weeks Up", "Weeks Down", "Weeks With Sales"]
+                life_show["Slope"] = life_show["Slope"].map(lambda v: f"{v:,.2f}") if "Slope" in life_show.columns else life_show.get("Slope")
+                for dc in ["First Sale","Last Sale"]:
+                    if dc in life_show.columns:
+                        life_show[dc] = pd.to_datetime(life_show[dc], errors="coerce").dt.date.astype(str)
+    
+                cols = [
+                    "SKU","Stage","Trend","Momentum",
+                    "Sales (lookback)","Units (lookback)",
+                    "Last Week Sales","WoW Sales Δ",
+                    "Slope","Weeks Up","Weeks Down","First Sale","Last Sale",
+                ]
                 cols = [c for c in cols if c in life_show.columns]
-                render_df(life_show[cols].head(200), height=520)
-
+                render_df(life_show[cols].head(60), height=520)
+    
         st.divider()
-
+    
         # C) Opportunity Detector
         st.subheader("3) Opportunity Detector (Find expansion + gaps)")
         if compare_mode == "None":
