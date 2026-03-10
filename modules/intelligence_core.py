@@ -751,8 +751,32 @@ def selection_total_card(label: str, cur_kpi: Dict[str, float], cmp_kpi: Dict[st
     units_arrow = "▲" if units_delta > 0 else ("▼" if units_delta < 0 else "•")
 
     asp = float(cur_kpi.get("ASP", 0.0))
+    prev_asp = float(cmp_kpi.get("ASP", 0.0))
+    asp_delta = asp - prev_asp
+    asp_color = "#2e7d32" if asp_delta > 0 else ("#c62828" if asp_delta < 0 else "var(--text-color)")
+    asp_arrow = "▲" if asp_delta > 0 else ("▼" if asp_delta < 0 else "•")
     sales_pct_html = f" ({pct_fmt(sales_pct)})" if not pd.isna(sales_pct) else ""
     units_pct_html = f" ({pct_fmt(units_pct)})" if not pd.isna(units_pct) else ""
+
+    cur_active_skus = int(cur_kpi.get('Active SKUs', 0) or 0)
+    cmp_active_skus = int(cmp_kpi.get('Active SKUs', 0) or 0)
+    cur_retailers = int(cur_kpi.get('Active Retailers', 0) or 0)
+    cmp_retailers = int(cmp_kpi.get('Active Retailers', 0) or 0)
+    cur_vendors = int(cur_kpi.get('Active Vendors', 0) or 0)
+    cmp_vendors = int(cmp_kpi.get('Active Vendors', 0) or 0)
+
+    cur_avg_units = (units / cur_active_skus) if cur_active_skus else 0.0
+    cmp_avg_units = (prev_units / cmp_active_skus) if cmp_active_skus else 0.0
+    cur_avg_sales = (sales / cur_active_skus) if cur_active_skus else 0.0
+    cmp_avg_sales = (prev_sales / cmp_active_skus) if cmp_active_skus else 0.0
+
+    def _delta_span(delta, money_mode=False, decimals=0):
+        color = "#2e7d32" if delta > 0 else ("#c62828" if delta < 0 else "var(--text-color)")
+        if money_mode:
+            txt = money(delta)
+        else:
+            txt = f"{delta:+,.{decimals}f}" if decimals else f"{int(delta):+,.0f}"
+        return f'<span style="color:{color}; margin-left:4px;">{txt}</span>'
 
     st.markdown(
         f"""
@@ -763,9 +787,9 @@ def selection_total_card(label: str, cur_kpi: Dict[str, float], cmp_kpi: Dict[st
             <div class="kpi-delta" style="color:{sales_color};margin-bottom:8px;">{sales_arrow} {money(sales_delta)}{sales_pct_html}</div>
             <div class="kpi-sub" style="font-size:12px;opacity:0.75;margin-bottom:2px;">Total Units</div>
             <div class="kpi-sub" style="font-size:16px;font-weight:700;color:var(--text-color);">{units:,.0f}</div>
-            <div class="kpi-delta" style="color:{units_color};margin-bottom:8px;">{units_arrow} {units_delta:,.0f}{units_pct_html} &nbsp; • &nbsp; ASP {money(asp)}</div>
-            <div class="kpi-sub" style="margin-top:6px;">Active SKUs: {int(cur_kpi.get('Active SKUs', 0)):,} &nbsp; • &nbsp; Retailers: {int(cur_kpi.get('Active Retailers', 0)):,} &nbsp; • &nbsp; Vendors: {int(cur_kpi.get('Active Vendors', 0)):,}</div>
-            <div class="kpi-sub" style="margin-top:6px;">Avg Units / SKU {((units / cur_kpi.get('Active SKUs', 0)) if cur_kpi.get('Active SKUs', 0) else 0):,.1f} &nbsp; • &nbsp; Avg Sales / SKU {money((sales / cur_kpi.get('Active SKUs', 0)) if cur_kpi.get('Active SKUs', 0) else 0)}</div>
+            <div class="kpi-delta" style="color:{units_color};margin-bottom:8px;">{units_arrow} {units_delta:,.0f}{units_pct_html} &nbsp; • &nbsp; ASP {money(asp)} <span style="color:{asp_color}; margin-left:4px;">{asp_arrow} {money(asp_delta)}</span></div>
+            <div class="kpi-sub" style="margin-top:6px; white-space:nowrap;">Active SKUs: {cur_active_skus:,}{_delta_span(cur_active_skus-cmp_active_skus)} &nbsp; • &nbsp; Retailers: {cur_retailers:,}{_delta_span(cur_retailers-cmp_retailers)} &nbsp; • &nbsp; Vendors: {cur_vendors:,}{_delta_span(cur_vendors-cmp_vendors)}</div>
+            <div class="kpi-sub" style="margin-top:6px; white-space:nowrap;">Avg Units / SKU {cur_avg_units:,.1f}{_delta_span(cur_avg_units-cmp_avg_units, decimals=1)} &nbsp; • &nbsp; Avg Sales / SKU {money(cur_avg_sales)}{_delta_span(cur_avg_sales-cmp_avg_sales, money_mode=True)}</div>
         </div>
         """,
         unsafe_allow_html=True,
@@ -810,14 +834,13 @@ def count_sales_card(label: str, count_value: int, sales_value: float, color: st
         sales_txt = "+" + sales_txt
     elif signed_sales and sales_value < 0:
         sales_txt = "-" + sales_txt
-    pct_html = "" if pd.isna(pct) else f'<div class="kpi-delta" style="color:{color}">({pct_fmt(pct)})</div>'
+    pct_html = "" if pd.isna(pct) else f'<span style="margin-left:8px; color:{color};">({pct_fmt(pct)})</span>'
     st.markdown(
         f"""
         <div class="kpi-card">
             <div class="kpi-title">{label}</div>
             <div class="kpi-value" style="color:{color}">{count_value:,}</div>
-            <div class="kpi-sub" style="color:{color}">Sales: {sales_txt}</div>
-            {pct_html}
+            <div class="kpi-sub" style="color:{color}">Sales: {sales_txt}{pct_html}</div>
         </div>
         """,
         unsafe_allow_html=True,
@@ -1674,11 +1697,13 @@ def run_app():
         show = rename_ab_columns(comp.copy(), a_lbl, b_lbl)
         sales_a_col = f"Sales ({a_lbl})"
         sales_b_col = f"Sales ({b_lbl})" if b_lbl else "Sales (Comparison)"
+        total_row = pd.DataFrame([{pivot_dim: "Total", sales_a_col: float(comp["Sales_A"].sum()), sales_b_col: float(comp["Sales_B"].sum()), "Difference": float(comp["Difference"].sum()), "% Change": np.nan}])
+        show = pd.concat([show[[pivot_dim, sales_a_col, sales_b_col, "Difference", "% Change"]], total_row], ignore_index=True)
         show[sales_a_col] = show[sales_a_col].map(money)
         show[sales_b_col] = show[sales_b_col].map(money)
         show["Difference"] = show["Difference"].map(money)
-        show["% Change"] = show["% Change"].map(pct_fmt)
-        render_df(show[[pivot_dim, sales_a_col, sales_b_col, "Difference", "% Change"]], height=360)
+        show["% Change"] = show["% Change"].map(lambda v: "" if pd.isna(v) else pct_fmt(v))
+        render_df(show[[pivot_dim, sales_a_col, sales_b_col, "Difference", "% Change"]], height=620)
     
         st.divider()
         st.subheader("Movers")
