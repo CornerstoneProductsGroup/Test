@@ -33,7 +33,6 @@ def _spark(values) -> str:
         idx = int(round((v - vmin) / (vmax - vmin) * (len(bars) - 1)))
         idx = max(0, min(idx, len(bars) - 1))
         out.append(bars[idx])
-
     return " ".join(out)
 
 
@@ -51,32 +50,13 @@ def _table_height(n_rows: int, row_px: int = 35, header_px: int = 38, max_px: in
     return min(max_px, header_px + max(1, n_rows) * row_px)
 
 
-def _render_metric_cards(df_scope: pd.DataFrame, labels: list[str], granularity: str):
-    df_sel = filter_by_period_labels(df_scope, labels, granularity)
-    if df_sel.empty:
-        st.info("No data for the selected periods.")
-        return
-
-    sales = float(df_sel["Sales"].sum()) if "Sales" in df_sel.columns else 0.0
-    units = float(df_sel["Units"].sum()) if "Units" in df_sel.columns else 0.0
-    asp = sales / units if units else 0.0
-    retailers = int(df_sel["Retailer"].dropna().nunique()) if "Retailer" in df_sel.columns else 0
-    vendors = int(df_sel["Vendor"].dropna().nunique()) if "Vendor" in df_sel.columns else 0
-    skus = int(df_sel["SKU"].dropna().nunique()) if "SKU" in df_sel.columns else 0
-
-    c1, c2, c3, c4, c5, c6 = st.columns(6)
-    with c1:
-        st.metric("Total Sales", money(sales))
-    with c2:
-        st.metric("Total Units", f"{units:,.0f}")
-    with c3:
-        st.metric("ASP", money(asp))
-    with c4:
-        st.metric("Retailers", f"{retailers:,}")
-    with c5:
-        st.metric("Vendors", f"{vendors:,}")
-    with c6:
-        st.metric("SKUs", f"{skus:,}")
+def _append_total_row(df: pd.DataFrame, row_dim: str, numeric_cols: list[str], trend_col: str | None = None) -> pd.DataFrame:
+    total_data = {row_dim: "TOTAL"}
+    for c in numeric_cols:
+        total_data[c] = pd.to_numeric(df[c], errors="coerce").fillna(0).sum()
+    if trend_col and trend_col in df.columns:
+        total_data[trend_col] = ""
+    return pd.concat([df, pd.DataFrame([total_data])], ignore_index=True)
 
 
 def _build_matrix(df: pd.DataFrame, labels: list[str], granularity: str, row_dim: str, metric: str) -> pd.DataFrame:
@@ -114,7 +94,7 @@ def _build_matrix(df: pd.DataFrame, labels: list[str], granularity: str, row_dim
 def _style_matrix(display_df: pd.DataFrame, numeric_df: pd.DataFrame, period_cols: list[str]):
     def style_row(row):
         idx = row.name
-        if isinstance(display_df.iloc[idx, 0], str) and display_df.iloc[idx, 0] == "TOTAL":
+        if str(display_df.iloc[idx, 0]) == "TOTAL":
             return ["font-weight:800; border-top:2px solid rgba(128,128,128,0.4);" for _ in row.index]
 
         vals = pd.to_numeric(numeric_df.loc[idx, period_cols], errors="coerce")
@@ -142,13 +122,134 @@ def _style_matrix(display_df: pd.DataFrame, numeric_df: pd.DataFrame, period_col
     return display_df.style.apply(style_row, axis=1)
 
 
-def _append_total_row(df: pd.DataFrame, row_dim: str, numeric_cols: list[str], trend_col: str | None = None) -> pd.DataFrame:
-    total_data = {row_dim: "TOTAL"}
-    for c in numeric_cols:
-        total_data[c] = pd.to_numeric(df[c], errors="coerce").fillna(0).sum()
-    if trend_col and trend_col in df.columns:
-        total_data[trend_col] = ""
-    return pd.concat([df, pd.DataFrame([total_data])], ignore_index=True)
+def _render_base_metric_cards(df_scope: pd.DataFrame, labels: list[str], granularity: str):
+    df_sel = filter_by_period_labels(df_scope, labels, granularity)
+    if df_sel.empty:
+        st.info("No data for the selected periods.")
+        return
+
+    sales = float(df_sel["Sales"].sum()) if "Sales" in df_sel.columns else 0.0
+    units = float(df_sel["Units"].sum()) if "Units" in df_sel.columns else 0.0
+    asp = sales / units if units else 0.0
+    retailers = int(df_sel["Retailer"].dropna().nunique()) if "Retailer" in df_sel.columns else 0
+    vendors = int(df_sel["Vendor"].dropna().nunique()) if "Vendor" in df_sel.columns else 0
+    skus = int(df_sel["SKU"].dropna().nunique()) if "SKU" in df_sel.columns else 0
+
+    c1, c2, c3, c4, c5, c6 = st.columns(6)
+    with c1:
+        st.metric("Total Sales", money(sales))
+    with c2:
+        st.metric("Total Units", f"{units:,.0f}")
+    with c3:
+        st.metric("ASP", money(asp))
+    with c4:
+        st.metric("Retailers", f"{retailers:,}")
+    with c5:
+        st.metric("Vendors", f"{vendors:,}")
+    with c6:
+        st.metric("SKUs", f"{skus:,}")
+
+
+def _entity_period_peaks(df_scope: pd.DataFrame, labels: list[str], granularity: str, dim: str):
+    rows = []
+    for lbl in labels:
+        part = filter_by_period_labels(df_scope, [lbl], granularity)
+        if part.empty or dim not in part.columns:
+            continue
+        grp = part.groupby(dim, as_index=False).agg(Sales=("Sales", "sum"))
+        if grp.empty:
+            continue
+        top = grp.sort_values("Sales", ascending=False).iloc[0]
+        rows.append({"Entity": top[dim], "Period": lbl, "Sales": float(top["Sales"])})
+    if not rows:
+        return None
+    out = pd.DataFrame(rows).sort_values("Sales", ascending=False).iloc[0]
+    return out["Entity"], out["Period"], float(out["Sales"])
+
+
+def _entity_growth_peaks(df_scope: pd.DataFrame, labels: list[str], granularity: str, dim: str):
+    rows = []
+    if len(labels) < 2:
+        return None
+
+    matrices = {}
+    for lbl in labels:
+        part = filter_by_period_labels(df_scope, [lbl], granularity)
+        if part.empty or dim not in part.columns:
+            matrices[lbl] = pd.DataFrame(columns=[dim, "Sales"])
+            continue
+        grp = part.groupby(dim, as_index=False).agg(Sales=("Sales", "sum"))
+        matrices[lbl] = grp
+
+    for i in range(1, len(labels)):
+        prev_lbl = labels[i - 1]
+        cur_lbl = labels[i]
+        prev_df = matrices[prev_lbl].rename(columns={"Sales": "PrevSales"})
+        cur_df = matrices[cur_lbl].rename(columns={"Sales": "CurSales"})
+        m = cur_df.merge(prev_df, on=dim, how="outer").fillna(0.0)
+        if m.empty:
+            continue
+        m["Growth"] = m["CurSales"] - m["PrevSales"]
+        top = m.sort_values("Growth", ascending=False).iloc[0]
+        rows.append(
+            {
+                "Entity": top[dim],
+                "Period": f"{cur_lbl} vs {prev_lbl}",
+                "Growth": float(top["Growth"]),
+            }
+        )
+
+    if not rows:
+        return None
+
+    out = pd.DataFrame(rows).sort_values("Growth", ascending=False).iloc[0]
+    return out["Entity"], out["Period"], float(out["Growth"])
+
+
+def _render_new_kpis(df_scope: pd.DataFrame, labels: list[str], granularity: str):
+    st.markdown("### Highlights")
+
+    retail_peak = _entity_period_peaks(df_scope, labels, granularity, "Retailer")
+    vendor_peak = _entity_period_peaks(df_scope, labels, granularity, "Vendor")
+    sku_peak = _entity_period_peaks(df_scope, labels, granularity, "SKU")
+
+    c1, c2, c3 = st.columns(3)
+    with c1:
+        if retail_peak:
+            st.metric("Biggest Retailer", retail_peak[0], f"{retail_peak[1]} • {money(retail_peak[2])}")
+        else:
+            st.metric("Biggest Retailer", "—")
+    with c2:
+        if vendor_peak:
+            st.metric("Biggest Vendor", vendor_peak[0], f"{vendor_peak[1]} • {money(vendor_peak[2])}")
+        else:
+            st.metric("Biggest Vendor", "—")
+    with c3:
+        if sku_peak:
+            st.metric("Biggest SKU", sku_peak[0], f"{sku_peak[1]} • {money(sku_peak[2])}")
+        else:
+            st.metric("Biggest SKU", "—")
+
+    retail_growth = _entity_growth_peaks(df_scope, labels, granularity, "Retailer")
+    vendor_growth = _entity_growth_peaks(df_scope, labels, granularity, "Vendor")
+    sku_growth = _entity_growth_peaks(df_scope, labels, granularity, "SKU")
+
+    c4, c5, c6 = st.columns(3)
+    with c4:
+        if retail_growth:
+            st.metric("Biggest Retailer Growth", retail_growth[0], f"{retail_growth[1]} • {money(retail_growth[2])}")
+        else:
+            st.metric("Biggest Retailer Growth", "—")
+    with c5:
+        if vendor_growth:
+            st.metric("Biggest Vendor Growth", vendor_growth[0], f"{vendor_growth[1]} • {money(vendor_growth[2])}")
+        else:
+            st.metric("Biggest Vendor Growth", "—")
+    with c6:
+        if sku_growth:
+            st.metric("Biggest SKU Growth", sku_growth[0], f"{sku_growth[1]} • {money(sku_growth[2])}")
+        else:
+            st.metric("Biggest SKU Growth", "—")
 
 
 def _render_multi_period_matrix(
@@ -255,15 +356,8 @@ def _render_yoy_growth_table(
         if row[row_dim] == "TOTAL":
             return ["font-weight:800; border-top:2px solid rgba(128,128,128,0.4);" for _ in row.index]
 
-        if not delta_col_names:
-            return styles
-
-        numeric_vals = pd.to_numeric(
-            delta_numeric.loc[row.name, delta_col_names],
-            errors="coerce",
-        )
+        numeric_vals = pd.to_numeric(delta_numeric.loc[row.name, delta_col_names], errors="coerce")
         valid = numeric_vals.dropna()
-
         if valid.empty:
             return styles
 
@@ -273,16 +367,13 @@ def _render_yoy_growth_table(
         for j, col in enumerate(out.columns):
             if col not in delta_col_names:
                 continue
-
             val = pd.to_numeric(delta_numeric.loc[row.name, col], errors="coerce")
             if pd.isna(val):
                 continue
-
             if val == hi and hi != lo:
                 styles[j] = "background-color: rgba(46,125,50,0.18); font-weight:700;"
             elif val == lo and hi != lo:
                 styles[j] = "background-color: rgba(198,40,40,0.18); font-weight:700;"
-
         return styles
 
     st.dataframe(
@@ -323,77 +414,6 @@ def _render_share_of_total_table(
         height=_table_height(len(share), row_px=36, max_px=1200),
         hide_index=True,
     )
-
-
-def _render_trend_chart_rows(
-    df_scope: pd.DataFrame,
-    labels: list[str],
-    granularity: str,
-    row_dim: str,
-    metric: str,
-    sort_by: str,
-):
-    st.markdown("### Trend Charts")
-
-    matrix = _build_matrix(df_scope, labels, granularity, row_dim, metric)
-    if matrix.empty:
-        st.info("No trend data available.")
-        return
-
-    period_cols = [c for c in labels if c in matrix.columns]
-
-    if sort_by == "Latest Selected":
-        matrix = matrix.sort_values("Latest", ascending=False)
-    elif sort_by == "Total":
-        matrix = matrix.sort_values("Total", ascending=False)
-    elif sort_by == "Average":
-        matrix = matrix.sort_values("Average", ascending=False)
-    elif sort_by == "Alphabetical":
-        matrix = matrix.sort_values(row_dim, ascending=True)
-
-    max_rows = min(50, len(matrix))
-    matrix = matrix.head(max_rows)
-
-    def _line(values):
-        vals = [float(v) if pd.notna(v) else 0.0 for v in values]
-        if not vals:
-            return ""
-        vmax = max(vals)
-        if vmax <= 0:
-            vmax = 1.0
-        cells = []
-        for lbl, v in zip(period_cols, vals):
-            width = max(6, int(round((v / vmax) * 100)))
-            cells.append(
-                f"""
-                <div style="display:flex; align-items:center; gap:10px; margin:4px 0;">
-                    <div style="width:90px; font-size:12px; opacity:0.75;">{lbl}</div>
-                    <div style="flex:1; height:18px; background:rgba(128,128,128,0.08); border-radius:999px; overflow:hidden;">
-                        <div style="height:18px; width:{width}%; background:rgba(59,130,246,0.55); border-radius:999px;"></div>
-                    </div>
-                    <div style="width:110px; text-align:right; font-size:12px; font-weight:700;">{_fmt_value(v, metric)}</div>
-                </div>
-                """
-            )
-        return "".join(cells)
-
-    for _, row in matrix.iterrows():
-        name = row[row_dim]
-        vals = [row[c] for c in period_cols]
-        total_val = _fmt_value(row["Total"], metric)
-
-        st.markdown(
-            f"""
-            <div style="border:1px solid rgba(128,128,128,0.18); border-radius:16px; padding:14px 16px; margin-bottom:14px; background:var(--secondary-background-color);">
-                <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:10px;">
-                    <div style="font-size:16px; font-weight:800;">{name}</div>
-                    <div style="font-size:13px; opacity:0.8;">Total: <strong>{total_val}</strong></div>
-                </div>
-                {_line(vals)}
-            </div>
-            """,
-            unsafe_allow_html=True,
-        )
 
 
 def _render_multi_year_seasonality(
@@ -482,7 +502,6 @@ def _render_performance_score(
 
         growth_pct = _safe_pct_change(latest_val, first_val)
         growth_score = 0.0 if pd.isna(growth_pct) else max(0.0, min(100.0, 50.0 + (growth_pct * 100.0)))
-
         total_score = 0.0 if total_max == 0 else (total_val / total_max) * 100.0
 
         diffs = np.diff(vals) if len(vals) >= 2 else np.array([0.0])
@@ -591,10 +610,10 @@ def render(ctx: dict):
 
     ordered_labels = [x for x in options if x in labels]
 
-    _render_metric_cards(df_scope, ordered_labels, granularity)
+    _render_base_metric_cards(df_scope, ordered_labels, granularity)
+    _render_new_kpis(df_scope, ordered_labels, granularity)
     _render_multi_period_matrix(df_scope, ordered_labels, granularity, row_dim, metric, sort_by)
     _render_yoy_growth_table(df_scope, ordered_labels, granularity, row_dim, metric)
     _render_share_of_total_table(df_scope, ordered_labels, granularity, row_dim, metric)
-    _render_trend_chart_rows(df_scope, ordered_labels, granularity, row_dim, metric, sort_by)
     _render_multi_year_seasonality(df_scope, ordered_labels, granularity, metric)
     _render_performance_score(df_scope, ordered_labels, granularity, row_dim, metric)
