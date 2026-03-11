@@ -11,6 +11,7 @@ from .shared_core import (
     available_month_labels,
     available_year_labels,
     filter_by_period_labels,
+    kpi_card,
 )
 
 
@@ -150,27 +151,32 @@ def _render_base_metric_cards(df_scope: pd.DataFrame, labels: list[str], granula
         st.metric("SKUs", f"{skus:,}")
 
 
-def _entity_period_peaks(df_scope: pd.DataFrame, labels: list[str], granularity: str, dim: str):
+def _period_entity_summary(df_scope: pd.DataFrame, labels: list[str], granularity: str, dim: str) -> pd.DataFrame:
     rows = []
     for lbl in labels:
         part = filter_by_period_labels(df_scope, [lbl], granularity)
         if part.empty or dim not in part.columns:
             continue
         grp = part.groupby(dim, as_index=False).agg(Sales=("Sales", "sum"))
+        total_sales = float(grp["Sales"].sum()) if not grp.empty else 0.0
         if grp.empty:
             continue
-        top = grp.sort_values("Sales", ascending=False).iloc[0]
-        rows.append({"Entity": top[dim], "Period": lbl, "Sales": float(top["Sales"])})
+        grp["Share"] = np.where(total_sales != 0, grp["Sales"] / total_sales, 0.0)
+        grp["Period"] = lbl
+        rows.append(grp[[dim, "Period", "Sales", "Share"]])
+
     if not rows:
-        return None
-    out = pd.DataFrame(rows).sort_values("Sales", ascending=False).iloc[0]
-    return out["Entity"], out["Period"], float(out["Sales"])
+        return pd.DataFrame(columns=[dim, "Period", "Sales", "Share"])
+
+    out = pd.concat(rows, ignore_index=True)
+    out = out.rename(columns={dim: "Entity"})
+    return out.sort_values("Sales", ascending=False).reset_index(drop=True)
 
 
-def _entity_growth_peaks(df_scope: pd.DataFrame, labels: list[str], granularity: str, dim: str):
+def _growth_entity_summary(df_scope: pd.DataFrame, labels: list[str], granularity: str, dim: str) -> pd.DataFrame:
     rows = []
     if len(labels) < 2:
-        return None
+        return pd.DataFrame(columns=[dim, "Period", "Growth", "Pct"])
 
     matrices = {}
     for lbl in labels:
@@ -190,66 +196,75 @@ def _entity_growth_peaks(df_scope: pd.DataFrame, labels: list[str], granularity:
         if m.empty:
             continue
         m["Growth"] = m["CurSales"] - m["PrevSales"]
-        top = m.sort_values("Growth", ascending=False).iloc[0]
-        rows.append(
-            {
-                "Entity": top[dim],
-                "Period": f"{cur_lbl} vs {prev_lbl}",
-                "Growth": float(top["Growth"]),
-            }
-        )
+        m["Pct"] = [
+            _safe_pct_change(cur, prev)
+            for cur, prev in zip(m["CurSales"].tolist(), m["PrevSales"].tolist())
+        ]
+        m["Period"] = f"{cur_lbl} vs {prev_lbl}"
+        rows.append(m[[dim, "Period", "Growth", "Pct"]])
 
     if not rows:
-        return None
+        return pd.DataFrame(columns=[dim, "Period", "Growth", "Pct"])
 
-    out = pd.DataFrame(rows).sort_values("Growth", ascending=False).iloc[0]
-    return out["Entity"], out["Period"], float(out["Growth"])
+    out = pd.concat(rows, ignore_index=True)
+    out = out.rename(columns={dim: "Entity"})
+    out = out.sort_values("Growth", ascending=False).reset_index(drop=True)
+    return out
 
 
-def _render_new_kpis(df_scope: pd.DataFrame, labels: list[str], granularity: str):
-    st.markdown("### Highlights")
+def _render_top2_peak_cards(df_scope: pd.DataFrame, labels: list[str], granularity: str):
+    st.markdown("### Biggest by Period")
 
-    retail_peak = _entity_period_peaks(df_scope, labels, granularity, "Retailer")
-    vendor_peak = _entity_period_peaks(df_scope, labels, granularity, "Vendor")
-    sku_peak = _entity_period_peaks(df_scope, labels, granularity, "SKU")
+    retail = _period_entity_summary(df_scope, labels, granularity, "Retailer").head(2)
+    vendor = _period_entity_summary(df_scope, labels, granularity, "Vendor").head(2)
+    sku = _period_entity_summary(df_scope, labels, granularity, "SKU").head(2)
 
-    c1, c2, c3 = st.columns(3)
-    with c1:
-        if retail_peak:
-            st.metric("Biggest Retailer", retail_peak[0], f"{retail_peak[1]} • {money(retail_peak[2])}")
-        else:
-            st.metric("Biggest Retailer", "—")
-    with c2:
-        if vendor_peak:
-            st.metric("Biggest Vendor", vendor_peak[0], f"{vendor_peak[1]} • {money(vendor_peak[2])}")
-        else:
-            st.metric("Biggest Vendor", "—")
-    with c3:
-        if sku_peak:
-            st.metric("Biggest SKU", sku_peak[0], f"{sku_peak[1]} • {money(sku_peak[2])}")
-        else:
-            st.metric("Biggest SKU", "—")
+    cols = st.columns(6)
 
-    retail_growth = _entity_growth_peaks(df_scope, labels, granularity, "Retailer")
-    vendor_growth = _entity_growth_peaks(df_scope, labels, granularity, "Vendor")
-    sku_growth = _entity_growth_peaks(df_scope, labels, granularity, "SKU")
+    entries = [
+        ("Biggest Retailer #1", retail.iloc[0] if len(retail) >= 1 else None),
+        ("Biggest Retailer #2", retail.iloc[1] if len(retail) >= 2 else None),
+        ("Biggest Vendor #1", vendor.iloc[0] if len(vendor) >= 1 else None),
+        ("Biggest Vendor #2", vendor.iloc[1] if len(vendor) >= 2 else None),
+        ("Biggest SKU #1", sku.iloc[0] if len(sku) >= 1 else None),
+        ("Biggest SKU #2", sku.iloc[1] if len(sku) >= 2 else None),
+    ]
 
-    c4, c5, c6 = st.columns(3)
-    with c4:
-        if retail_growth:
-            st.metric("Biggest Retailer Growth", retail_growth[0], f"{retail_growth[1]} • {money(retail_growth[2])}")
-        else:
-            st.metric("Biggest Retailer Growth", "—")
-    with c5:
-        if vendor_growth:
-            st.metric("Biggest Vendor Growth", vendor_growth[0], f"{vendor_growth[1]} • {money(vendor_growth[2])}")
-        else:
-            st.metric("Biggest Vendor Growth", "—")
-    with c6:
-        if sku_growth:
-            st.metric("Biggest SKU Growth", sku_growth[0], f"{sku_growth[1]} • {money(sku_growth[2])}")
-        else:
-            st.metric("Biggest SKU Growth", "—")
+    for col, (title, row) in zip(cols, entries):
+        with col:
+            if row is None:
+                kpi_card(title, "—", "")
+            else:
+                detail = f"{row['Entity']} • {row['Period']} • {row['Share']:.1%} share"
+                kpi_card(title, money(float(row["Sales"])), detail)
+
+
+def _render_top2_growth_cards(df_scope: pd.DataFrame, labels: list[str], granularity: str):
+    st.markdown("### Biggest Growth")
+
+    retail = _growth_entity_summary(df_scope, labels, granularity, "Retailer").head(2)
+    vendor = _growth_entity_summary(df_scope, labels, granularity, "Vendor").head(2)
+    sku = _growth_entity_summary(df_scope, labels, granularity, "SKU").head(2)
+
+    cols = st.columns(6)
+
+    entries = [
+        ("Retailer Growth #1", retail.iloc[0] if len(retail) >= 1 else None),
+        ("Retailer Growth #2", retail.iloc[1] if len(retail) >= 2 else None),
+        ("Vendor Growth #1", vendor.iloc[0] if len(vendor) >= 1 else None),
+        ("Vendor Growth #2", vendor.iloc[1] if len(vendor) >= 2 else None),
+        ("SKU Growth #1", sku.iloc[0] if len(sku) >= 1 else None),
+        ("SKU Growth #2", sku.iloc[1] if len(sku) >= 2 else None),
+    ]
+
+    for col, (title, row) in zip(cols, entries):
+        with col:
+            if row is None:
+                kpi_card(title, "—", "")
+            else:
+                pct_text = "—" if pd.isna(row["Pct"]) else f"{float(row['Pct']):.1%}"
+                detail = f"{row['Entity']} • {row['Period']} • {pct_text}"
+                kpi_card(title, money(float(row["Growth"])), detail)
 
 
 def _render_multi_period_matrix(
@@ -611,7 +626,8 @@ def render(ctx: dict):
     ordered_labels = [x for x in options if x in labels]
 
     _render_base_metric_cards(df_scope, ordered_labels, granularity)
-    _render_new_kpis(df_scope, ordered_labels, granularity)
+    _render_top2_peak_cards(df_scope, ordered_labels, granularity)
+    _render_top2_growth_cards(df_scope, ordered_labels, granularity)
     _render_multi_period_matrix(df_scope, ordered_labels, granularity, row_dim, metric, sort_by)
     _render_yoy_growth_table(df_scope, ordered_labels, granularity, row_dim, metric)
     _render_share_of_total_table(df_scope, ordered_labels, granularity, row_dim, metric)
