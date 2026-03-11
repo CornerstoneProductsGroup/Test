@@ -27,12 +27,14 @@ def _spark(values) -> str:
     vmax = max(vals)
     if math.isclose(vmax, vmin):
         return bars[3] * len(vals)
+
     out = []
     for v in vals:
         idx = int(round((v - vmin) / (vmax - vmin) * (len(bars) - 1)))
         idx = max(0, min(idx, len(bars) - 1))
         out.append(bars[idx])
-    return "".join(out)
+
+    return " ".join(out)
 
 
 def _safe_pct_change(cur: float, prev: float) -> float:
@@ -105,7 +107,7 @@ def _build_matrix(df: pd.DataFrame, labels: list[str], granularity: str, row_dim
     return out
 
 
-def _style_matrix(display_df: pd.DataFrame, numeric_df: pd.DataFrame, row_dim: str, period_cols: list[str]):
+def _style_matrix(display_df: pd.DataFrame, numeric_df: pd.DataFrame, period_cols: list[str]):
     def style_row(row):
         idx = row.name
         vals = pd.to_numeric(numeric_df.loc[idx, period_cols], errors="coerce")
@@ -166,7 +168,7 @@ def _render_multi_period_matrix(
         if c in show.columns:
             show[c] = show[c].map(lambda v: _fmt_value(v, metric))
 
-    styled = _style_matrix(show, numeric_source, row_dim, period_cols)
+    styled = _style_matrix(show, numeric_source, period_cols)
 
     st.dataframe(
         styled,
@@ -195,43 +197,62 @@ def _render_yoy_growth_table(
         return
 
     out = matrix[[row_dim]].copy()
-    numeric_pairs = []
+    sales_delta_cols = []
+    sales_delta_numeric = pd.DataFrame(index=matrix.index)
 
     for i in range(1, len(labels)):
         prev_lbl = labels[i - 1]
         cur_lbl = labels[i]
-        col_name = f"{cur_lbl} vs {prev_lbl}"
+        delta_col = f"{cur_lbl} vs {prev_lbl}"
+        pct_col = f"{cur_lbl} vs {prev_lbl} %"
 
-        if metric == "Sales":
-            growth_val = matrix[cur_lbl] - matrix[prev_lbl]
-            out[col_name] = growth_val.map(money)
-        else:
-            growth_val = matrix[cur_lbl] - matrix[prev_lbl]
-            out[col_name] = growth_val.map(lambda v: f"{v:,.0f}")
-
-        pct_name = f"{cur_lbl} vs {prev_lbl} %"
+        delta_vals = matrix[cur_lbl] - matrix[prev_lbl]
         pct_vals = [
             _safe_pct_change(cur, prev)
             for cur, prev in zip(matrix[cur_lbl].tolist(), matrix[prev_lbl].tolist())
         ]
-        out[pct_name] = [
-            "—" if pd.isna(v) else f"{v:.1%}"
-            for v in pct_vals
-        ]
-        numeric_pairs.append((col_name, growth_val))
-        numeric_pairs.append((pct_name, pd.Series(pct_vals, index=matrix.index)))
+
+        if metric == "Sales":
+            out[delta_col] = delta_vals.map(money)
+        else:
+            out[delta_col] = delta_vals.map(lambda v: f"{v:,.0f}")
+
+        out[pct_col] = ["—" if pd.isna(v) else f"{v:.1%}" for v in pct_vals]
+
+        sales_delta_cols.append(delta_col)
+        sales_delta_numeric[delta_col] = delta_vals
 
     def style_row(row):
         styles = [""] * len(out.columns)
+
+        if not sales_delta_cols:
+            return styles
+
+        numeric_vals = pd.to_numeric(
+            sales_delta_numeric.loc[row.name, sales_delta_cols],
+            errors="coerce",
+        )
+        valid = numeric_vals.dropna()
+
+        if valid.empty:
+            return styles
+
+        hi = valid.max()
+        lo = valid.min()
+
         for j, col in enumerate(out.columns):
-            if col == row_dim:
+            if col not in sales_delta_cols:
                 continue
-            val = row[col]
-            if isinstance(val, str) and val not in ("—", ""):
-                if val.startswith("-"):
-                    styles[j] = "background-color: rgba(198,40,40,0.16); font-weight:700;"
-                elif val.startswith("$") or val[0].isdigit():
-                    styles[j] = "background-color: rgba(46,125,50,0.16); font-weight:700;"
+
+            val = pd.to_numeric(sales_delta_numeric.loc[row.name, col], errors="coerce")
+            if pd.isna(val):
+                continue
+
+            if val == hi and hi != lo:
+                styles[j] = "background-color: rgba(46,125,50,0.18); font-weight:700;"
+            elif val == lo and hi != lo:
+                styles[j] = "background-color: rgba(198,40,40,0.18); font-weight:700;"
+
         return styles
 
     st.dataframe(
@@ -459,7 +480,6 @@ def render(ctx: dict):
         )
 
     options = available_year_labels(df_scope) if granularity == "Year" else available_month_labels(df_scope)
-
     default_sel = options[-4:] if len(options) >= 4 else options
 
     with c2:
