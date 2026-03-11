@@ -26,7 +26,7 @@ def _spark(values) -> str:
     vmin = min(vals)
     vmax = max(vals)
     if math.isclose(vmax, vmin):
-        return bars[3] * len(vals)
+        return " ".join([bars[3]] * len(vals))
 
     out = []
     for v in vals:
@@ -45,6 +45,10 @@ def _safe_pct_change(cur: float, prev: float) -> float:
             return 0.0
         return np.nan
     return (cur - prev) / prev
+
+
+def _table_height(n_rows: int, row_px: int = 35, header_px: int = 38, max_px: int = 1200) -> int:
+    return min(max_px, header_px + max(1, n_rows) * row_px)
 
 
 def _render_metric_cards(df_scope: pd.DataFrame, labels: list[str], granularity: str):
@@ -110,6 +114,9 @@ def _build_matrix(df: pd.DataFrame, labels: list[str], granularity: str, row_dim
 def _style_matrix(display_df: pd.DataFrame, numeric_df: pd.DataFrame, period_cols: list[str]):
     def style_row(row):
         idx = row.name
+        if isinstance(display_df.iloc[idx, 0], str) and display_df.iloc[idx, 0] == "TOTAL":
+            return ["font-weight:800; border-top:2px solid rgba(128,128,128,0.4);" for _ in row.index]
+
         vals = pd.to_numeric(numeric_df.loc[idx, period_cols], errors="coerce")
         valid = vals.dropna()
         styles = [""] * len(display_df.columns)
@@ -133,6 +140,15 @@ def _style_matrix(display_df: pd.DataFrame, numeric_df: pd.DataFrame, period_col
         return styles
 
     return display_df.style.apply(style_row, axis=1)
+
+
+def _append_total_row(df: pd.DataFrame, row_dim: str, numeric_cols: list[str], trend_col: str | None = None) -> pd.DataFrame:
+    total_data = {row_dim: "TOTAL"}
+    for c in numeric_cols:
+        total_data[c] = pd.to_numeric(df[c], errors="coerce").fillna(0).sum()
+    if trend_col and trend_col in df.columns:
+        total_data[trend_col] = ""
+    return pd.concat([df, pd.DataFrame([total_data])], ignore_index=True)
 
 
 def _render_multi_period_matrix(
@@ -161,19 +177,20 @@ def _render_multi_period_matrix(
     elif sort_by == "Alphabetical":
         matrix = matrix.sort_values(row_dim, ascending=True)
 
-    show = matrix[[row_dim] + period_cols + ["Total", "Average", "Trend"]].copy()
-    numeric_source = show.copy()
+    show_numeric = matrix[[row_dim] + period_cols + ["Total", "Average", "Trend"]].copy()
+    show_numeric = _append_total_row(show_numeric, row_dim, period_cols + ["Total", "Average"], trend_col="Trend")
 
+    show = show_numeric.copy()
     for c in period_cols + ["Total", "Average"]:
         if c in show.columns:
-            show[c] = show[c].map(lambda v: _fmt_value(v, metric))
+            show[c] = show[c].map(lambda v: _fmt_value(v, metric) if pd.notna(v) else "")
 
-    styled = _style_matrix(show, numeric_source, period_cols)
+    styled = _style_matrix(show, show_numeric, period_cols)
 
     st.dataframe(
         styled,
         use_container_width=True,
-        height=520,
+        height=_table_height(len(show), row_px=36, max_px=1350),
         hide_index=True,
     )
 
@@ -197,8 +214,8 @@ def _render_yoy_growth_table(
         return
 
     out = matrix[[row_dim]].copy()
-    sales_delta_cols = []
-    sales_delta_numeric = pd.DataFrame(index=matrix.index)
+    delta_col_names = []
+    delta_numeric = pd.DataFrame(index=matrix.index)
 
     for i in range(1, len(labels)):
         prev_lbl = labels[i - 1]
@@ -219,17 +236,30 @@ def _render_yoy_growth_table(
 
         out[pct_col] = ["—" if pd.isna(v) else f"{v:.1%}" for v in pct_vals]
 
-        sales_delta_cols.append(delta_col)
-        sales_delta_numeric[delta_col] = delta_vals
+        delta_col_names.append(delta_col)
+        delta_numeric[delta_col] = delta_vals
+
+    total_row = {row_dim: "TOTAL"}
+    for col in out.columns[1:]:
+        if col in delta_col_names:
+            summed = pd.to_numeric(delta_numeric[col], errors="coerce").fillna(0).sum()
+            total_row[col] = money(summed) if metric == "Sales" else f"{summed:,.0f}"
+        else:
+            total_row[col] = ""
+
+    out = pd.concat([out, pd.DataFrame([total_row])], ignore_index=True)
 
     def style_row(row):
         styles = [""] * len(out.columns)
 
-        if not sales_delta_cols:
+        if row[row_dim] == "TOTAL":
+            return ["font-weight:800; border-top:2px solid rgba(128,128,128,0.4);" for _ in row.index]
+
+        if not delta_col_names:
             return styles
 
         numeric_vals = pd.to_numeric(
-            sales_delta_numeric.loc[row.name, sales_delta_cols],
+            delta_numeric.loc[row.name, delta_col_names],
             errors="coerce",
         )
         valid = numeric_vals.dropna()
@@ -241,10 +271,10 @@ def _render_yoy_growth_table(
         lo = valid.min()
 
         for j, col in enumerate(out.columns):
-            if col not in sales_delta_cols:
+            if col not in delta_col_names:
                 continue
 
-            val = pd.to_numeric(sales_delta_numeric.loc[row.name, col], errors="coerce")
+            val = pd.to_numeric(delta_numeric.loc[row.name, col], errors="coerce")
             if pd.isna(val):
                 continue
 
@@ -258,7 +288,7 @@ def _render_yoy_growth_table(
     st.dataframe(
         out.style.apply(style_row, axis=1),
         use_container_width=True,
-        height=420,
+        height=_table_height(len(out), row_px=36, max_px=1350),
         hide_index=True,
     )
 
@@ -290,12 +320,12 @@ def _render_share_of_total_table(
     st.dataframe(
         share,
         use_container_width=True,
-        height=420,
+        height=_table_height(len(share), row_px=36, max_px=1200),
         hide_index=True,
     )
 
 
-def _render_trend_table(
+def _render_trend_chart_rows(
     df_scope: pd.DataFrame,
     labels: list[str],
     granularity: str,
@@ -310,6 +340,8 @@ def _render_trend_table(
         st.info("No trend data available.")
         return
 
+    period_cols = [c for c in labels if c in matrix.columns]
+
     if sort_by == "Latest Selected":
         matrix = matrix.sort_values("Latest", ascending=False)
     elif sort_by == "Total":
@@ -319,10 +351,49 @@ def _render_trend_table(
     elif sort_by == "Alphabetical":
         matrix = matrix.sort_values(row_dim, ascending=True)
 
-    show = matrix[[row_dim, "Trend", "Total"]].copy()
-    show["Total"] = show["Total"].map(lambda v: _fmt_value(v, metric))
+    max_rows = min(50, len(matrix))
+    matrix = matrix.head(max_rows)
 
-    render_df(show, height=420)
+    def _line(values):
+        vals = [float(v) if pd.notna(v) else 0.0 for v in values]
+        if not vals:
+            return ""
+        vmax = max(vals)
+        if vmax <= 0:
+            vmax = 1.0
+        cells = []
+        for lbl, v in zip(period_cols, vals):
+            width = max(6, int(round((v / vmax) * 100)))
+            cells.append(
+                f"""
+                <div style="display:flex; align-items:center; gap:10px; margin:4px 0;">
+                    <div style="width:90px; font-size:12px; opacity:0.75;">{lbl}</div>
+                    <div style="flex:1; height:18px; background:rgba(128,128,128,0.08); border-radius:999px; overflow:hidden;">
+                        <div style="height:18px; width:{width}%; background:rgba(59,130,246,0.55); border-radius:999px;"></div>
+                    </div>
+                    <div style="width:110px; text-align:right; font-size:12px; font-weight:700;">{_fmt_value(v, metric)}</div>
+                </div>
+                """
+            )
+        return "".join(cells)
+
+    for _, row in matrix.iterrows():
+        name = row[row_dim]
+        vals = [row[c] for c in period_cols]
+        total_val = _fmt_value(row["Total"], metric)
+
+        st.markdown(
+            f"""
+            <div style="border:1px solid rgba(128,128,128,0.18); border-radius:16px; padding:14px 16px; margin-bottom:14px; background:var(--secondary-background-color);">
+                <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:10px;">
+                    <div style="font-size:16px; font-weight:800;">{name}</div>
+                    <div style="font-size:13px; opacity:0.8;">Total: <strong>{total_val}</strong></div>
+                </div>
+                {_line(vals)}
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
 
 
 def _render_multi_year_seasonality(
@@ -375,7 +446,7 @@ def _render_multi_year_seasonality(
     for c in ordered_years:
         show[c] = show[c].map(lambda v: _fmt_value(v, metric))
 
-    render_df(show, height=260)
+    render_df(show, height=300)
 
 
 def _render_performance_score(
@@ -456,7 +527,7 @@ def _render_performance_score(
     out["Score"] = out["Score"].map(lambda v: f"{v:.0f}")
     out["Total"] = out["Total"].map(lambda v: _fmt_value(v, metric))
 
-    render_df(out, height=420)
+    render_df(out, height=500)
 
 
 def render(ctx: dict):
@@ -524,6 +595,6 @@ def render(ctx: dict):
     _render_multi_period_matrix(df_scope, ordered_labels, granularity, row_dim, metric, sort_by)
     _render_yoy_growth_table(df_scope, ordered_labels, granularity, row_dim, metric)
     _render_share_of_total_table(df_scope, ordered_labels, granularity, row_dim, metric)
-    _render_trend_table(df_scope, ordered_labels, granularity, row_dim, metric, sort_by)
+    _render_trend_chart_rows(df_scope, ordered_labels, granularity, row_dim, metric, sort_by)
     _render_multi_year_seasonality(df_scope, ordered_labels, granularity, metric)
     _render_performance_score(df_scope, ordered_labels, granularity, row_dim, metric)
