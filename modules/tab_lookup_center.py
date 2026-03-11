@@ -1,4 +1,6 @@
+
 from __future__ import annotations
+import calendar
 import numpy as np
 import pandas as pd
 import streamlit as st
@@ -44,6 +46,93 @@ def _weekly_pivot(df: pd.DataFrame, row_dim: str, metric: str) -> pd.DataFrame:
         piv["Vs Avg"] = piv["Current"] - piv["Average"]
         piv["Active Weeks"] = (vals > 0).sum(axis=1)
     return piv.reset_index()
+
+
+def _seasonality_tables(df_sel: pd.DataFrame, metric: str):
+    d = df_sel.copy()
+    d["WeekEnd"] = pd.to_datetime(d["WeekEnd"], errors="coerce")
+    d = d[d["WeekEnd"].notna()].copy()
+    if d.empty:
+        return pd.DataFrame(), pd.DataFrame(), None, None, "Low"
+
+    # Month seasonality: normalize by active week count in each month
+    d["MonthNum"] = d["WeekEnd"].dt.month
+    d["MonthLabel"] = d["WeekEnd"].dt.month.map(lambda m: calendar.month_abbr[int(m)])
+    month = d.groupby("MonthNum", as_index=False).agg(
+        Total=(metric, "sum"),
+        ActiveWeeks=("WeekEnd", "nunique")
+    )
+    month["AvgWeekly"] = np.where(month["ActiveWeeks"] != 0, month["Total"] / month["ActiveWeeks"], 0.0)
+    all_months = pd.DataFrame({"MonthNum": list(range(1, 13))})
+    month = all_months.merge(month, on="MonthNum", how="left").fillna(0.0)
+    month["Month"] = month["MonthNum"].map(lambda m: calendar.month_abbr[int(m)])
+    max_month = float(month["AvgWeekly"].max()) if not month.empty else 0.0
+
+    def _bar(v, vmax, width=10):
+        if vmax <= 0 or v <= 0:
+            return ""
+        n = max(1, int(round((float(v) / float(vmax)) * width)))
+        return "▓" * n
+
+    month["Visual"] = month["AvgWeekly"].map(lambda v: _bar(v, max_month, 10))
+    month["Value"] = month["AvgWeekly"].map(lambda v: _fmt_num(v, metric))
+    month_show = month[["Month", "Visual", "Value"]].copy()
+
+    peak_row = month.sort_values("AvgWeekly", ascending=False).iloc[0] if max_month > 0 else None
+    nz_month = month[month["AvgWeekly"] > 0]
+    low_row = nz_month.sort_values("AvgWeekly", ascending=True).iloc[0] if not nz_month.empty else None
+
+    nz = month["AvgWeekly"][month["AvgWeekly"] > 0]
+    if len(nz) >= 2:
+        ratio = float(nz.max() / nz.mean()) if float(nz.mean()) > 0 else 0.0
+        strength = "High" if ratio >= 1.6 else ("Medium" if ratio >= 1.25 else "Low")
+    else:
+        strength = "Low"
+
+    # Week-of-year seasonality: 4 quarter-like buckets
+    d["WeekOfYear"] = d["WeekEnd"].dt.isocalendar().week.astype(int)
+    bins = [0, 13, 26, 39, 53]
+    labels = ["Week 1–13", "Week 14–26", "Week 27–39", "Week 40–52"]
+    d["WeekBucket"] = pd.cut(d["WeekOfYear"], bins=bins, labels=labels, include_lowest=True, right=True)
+    woy = d.groupby("WeekBucket", as_index=False, observed=False).agg(
+        Total=(metric, "sum"),
+        ActiveWeeks=("WeekEnd", "nunique")
+    )
+    all_woy = pd.DataFrame({"WeekBucket": labels})
+    woy = all_woy.merge(woy, on="WeekBucket", how="left").fillna(0.0)
+    woy["AvgWeekly"] = np.where(woy["ActiveWeeks"] != 0, woy["Total"] / woy["ActiveWeeks"], 0.0)
+    max_woy = float(woy["AvgWeekly"].max()) if not woy.empty else 0.0
+    woy["Visual"] = woy["AvgWeekly"].map(lambda v: _bar(v, max_woy, 10))
+    woy["Value"] = woy["AvgWeekly"].map(lambda v: _fmt_num(v, metric))
+    woy_show = woy.rename(columns={"WeekBucket": "Period"})[["Period", "Visual", "Value"]].copy()
+
+    peak_txt = f"{peak_row['Month']} • {_fmt_num(peak_row['AvgWeekly'], metric)}" if peak_row is not None and peak_row["AvgWeekly"] > 0 else "—"
+    low_txt = f"{low_row['Month']} • {_fmt_num(low_row['AvgWeekly'], metric)}" if low_row is not None else "—"
+    return month_show, woy_show, peak_txt, low_txt, strength
+
+
+def _render_seasonality_section(df_sel: pd.DataFrame, metric: str, title: str = "Seasonality"):
+    st.markdown(f"### {title}")
+    month_show, woy_show, peak_txt, low_txt, strength = _seasonality_tables(df_sel, metric)
+    if month_show.empty:
+        st.caption("No seasonality history available.")
+        return
+
+    c1, c2, c3 = st.columns(3)
+    with c1:
+        st.metric("Peak Month", peak_txt)
+    with c2:
+        st.metric("Low Month", low_txt)
+    with c3:
+        st.metric("Seasonality Strength", strength)
+
+    left, right = st.columns(2)
+    with left:
+        st.markdown("**Month Seasonality**")
+        render_df(month_show, height=430)
+    with right:
+        st.markdown("**Week-of-Year Seasonality**")
+        render_df(woy_show, height=260)
 
 
 def _render_single_sku(df_sel: pd.DataFrame, metric: str, lookup_value: str):
@@ -109,22 +198,7 @@ def _render_single_sku(df_sel: pd.DataFrame, metric: str, lookup_value: str):
             piv["Active Weeks"] = piv["Active Weeks"].map(lambda v: f"{v:,.0f}")
         render_df(piv, height=420)
 
-    st.markdown("### Seasonality Snapshot")
-    mo = df_sel.copy()
-    mo["Month"] = pd.to_datetime(mo["WeekEnd"]).dt.strftime("%B %Y")
-    ms = mo.groupby("Month", as_index=False).agg(Sales=("Sales", "sum"), Units=("Units", "sum")).sort_values("Month")
-    if ms.empty:
-        st.caption("No monthly history available.")
-    else:
-        peak = ms.sort_values(metric, ascending=False).iloc[0]
-        low = ms[ms[metric] > 0].sort_values(metric, ascending=True).iloc[0] if not ms[ms[metric] > 0].empty else None
-        c1, c2 = st.columns(2)
-        with c1: st.metric("Peak Month", f"{peak['Month']} • {_fmt_num(peak[metric], metric)}")
-        with c2: st.metric("Low Month", f"{low['Month']} • {_fmt_num(low[metric], metric)}" if low is not None else "—")
-        show = ms.copy()
-        show["Sales"] = show["Sales"].map(money)
-        show["Units"] = show["Units"].map(lambda v: f"{v:,.0f}")
-        render_df(show, height=260)
+    _render_seasonality_section(df_sel, metric, title="Seasonality")
 
     st.markdown("### Retailer Contribution Trend")
     ct = df_sel.groupby(["WeekEnd", "Retailer"], as_index=False).agg(Value=(metric, "sum"))
@@ -185,6 +259,8 @@ def _render_vendor(df_sel: pd.DataFrame, metric: str, lookup_value: str):
     else:
         st.caption("No weekly activity available.")
 
+    _render_seasonality_section(df_sel, metric, title="Seasonality")
+
 
 def _render_retailer(df_sel: pd.DataFrame, metric: str, lookup_value: str):
     st.markdown("### Retailer Intelligence Summary")
@@ -229,6 +305,8 @@ def _render_retailer(df_sel: pd.DataFrame, metric: str, lookup_value: str):
         render_df(piv, height=420)
     else:
         st.caption("No weekly activity available.")
+
+    _render_seasonality_section(df_sel, metric, title="Seasonality")
 
 
 def render(ctx: dict):
