@@ -11,7 +11,6 @@ from .shared_core import (
     available_month_labels,
     available_year_labels,
     filter_by_period_labels,
-    kpi_card,
 )
 
 
@@ -212,6 +211,49 @@ def _growth_entity_summary(df_scope: pd.DataFrame, labels: list[str], granularit
     return out
 
 
+def _truncate_text(x: str, max_len: int = 26) -> str:
+    x = str(x)
+    return x if len(x) <= max_len else x[: max_len - 1] + "…"
+
+
+def _stacked_kpi_card(title: str, first: dict | None, second: dict | None, value_key: str):
+    def _render_item(rank_label: str, item: dict | None) -> str:
+        if item is None:
+            return f"""
+            <div style="padding:2px 0 2px 0;">
+                <div class="kpi-title">{rank_label}</div>
+                <div style="font-size:15px; font-weight:700; color:var(--text-color);">—</div>
+            </div>
+            """
+
+        value_html = item["value"]
+        detail_html = item["detail"]
+        name_html = _truncate_text(item["name"])
+
+        return f"""
+        <div style="padding:2px 0 2px 0;">
+            <div class="kpi-title">{rank_label}</div>
+            <div style="font-size:18px; font-weight:800; line-height:1.15; color:var(--text-color);">{value_html}</div>
+            <div style="font-size:15px; font-weight:700; line-height:1.2; color:var(--text-color); margin-top:4px;">{name_html}</div>
+            <div class="kpi-delta" style="margin-top:4px;">{detail_html}</div>
+        </div>
+        """
+
+    divider = "<div style='height:1px; background:rgba(128,128,128,0.20); margin:10px 0;'></div>"
+
+    st.markdown(
+        f"""
+        <div class="kpi-card" style="min-height:215px;">
+            <div class="kpi-title" style="margin-bottom:8px;">{title}</div>
+            {_render_item("#1", first)}
+            {divider}
+            {_render_item("#2", second)}
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
 def _render_top2_peak_cards(df_scope: pd.DataFrame, labels: list[str], granularity: str):
     st.markdown("### Biggest by Period")
 
@@ -219,24 +261,23 @@ def _render_top2_peak_cards(df_scope: pd.DataFrame, labels: list[str], granulari
     vendor = _period_entity_summary(df_scope, labels, granularity, "Vendor").head(2)
     sku = _period_entity_summary(df_scope, labels, granularity, "SKU").head(2)
 
-    cols = st.columns(6)
+    def _pack(df: pd.DataFrame, idx: int):
+        if len(df) <= idx:
+            return None
+        row = df.iloc[idx]
+        return {
+            "name": row["Entity"],
+            "value": money(float(row["Sales"])),
+            "detail": f"{row['Period']} • {float(row['Share']):.1%} share",
+        }
 
-    entries = [
-        ("Biggest Retailer #1", retail.iloc[0] if len(retail) >= 1 else None),
-        ("Biggest Retailer #2", retail.iloc[1] if len(retail) >= 2 else None),
-        ("Biggest Vendor #1", vendor.iloc[0] if len(vendor) >= 1 else None),
-        ("Biggest Vendor #2", vendor.iloc[1] if len(vendor) >= 2 else None),
-        ("Biggest SKU #1", sku.iloc[0] if len(sku) >= 1 else None),
-        ("Biggest SKU #2", sku.iloc[1] if len(sku) >= 2 else None),
-    ]
-
-    for col, (title, row) in zip(cols, entries):
-        with col:
-            if row is None:
-                kpi_card(title, "—", "")
-            else:
-                detail = f"{row['Entity']} • {row['Period']} • {row['Share']:.1%} share"
-                kpi_card(title, money(float(row["Sales"])), detail)
+    c1, c2, c3 = st.columns(3)
+    with c1:
+        _stacked_kpi_card("Biggest Retailer", _pack(retail, 0), _pack(retail, 1), "Sales")
+    with c2:
+        _stacked_kpi_card("Biggest Vendor", _pack(vendor, 0), _pack(vendor, 1), "Sales")
+    with c3:
+        _stacked_kpi_card("Biggest SKU", _pack(sku, 0), _pack(sku, 1), "Sales")
 
 
 def _render_top2_growth_cards(df_scope: pd.DataFrame, labels: list[str], granularity: str):
@@ -246,25 +287,24 @@ def _render_top2_growth_cards(df_scope: pd.DataFrame, labels: list[str], granula
     vendor = _growth_entity_summary(df_scope, labels, granularity, "Vendor").head(2)
     sku = _growth_entity_summary(df_scope, labels, granularity, "SKU").head(2)
 
-    cols = st.columns(6)
+    def _pack(df: pd.DataFrame, idx: int):
+        if len(df) <= idx:
+            return None
+        row = df.iloc[idx]
+        pct_text = "—" if pd.isna(row["Pct"]) else f"{float(row['Pct']):.1%}"
+        return {
+            "name": row["Entity"],
+            "value": money(float(row["Growth"])),
+            "detail": f"{row['Period']} • {pct_text}",
+        }
 
-    entries = [
-        ("Retailer Growth #1", retail.iloc[0] if len(retail) >= 1 else None),
-        ("Retailer Growth #2", retail.iloc[1] if len(retail) >= 2 else None),
-        ("Vendor Growth #1", vendor.iloc[0] if len(vendor) >= 1 else None),
-        ("Vendor Growth #2", vendor.iloc[1] if len(vendor) >= 2 else None),
-        ("SKU Growth #1", sku.iloc[0] if len(sku) >= 1 else None),
-        ("SKU Growth #2", sku.iloc[1] if len(sku) >= 2 else None),
-    ]
-
-    for col, (title, row) in zip(cols, entries):
-        with col:
-            if row is None:
-                kpi_card(title, "—", "")
-            else:
-                pct_text = "—" if pd.isna(row["Pct"]) else f"{float(row['Pct']):.1%}"
-                detail = f"{row['Entity']} • {row['Period']} • {pct_text}"
-                kpi_card(title, money(float(row["Growth"])), detail)
+    c1, c2, c3 = st.columns(3)
+    with c1:
+        _stacked_kpi_card("Retailer Growth", _pack(retail, 0), _pack(retail, 1), "Growth")
+    with c2:
+        _stacked_kpi_card("Vendor Growth", _pack(vendor, 0), _pack(vendor, 1), "Growth")
+    with c3:
+        _stacked_kpi_card("SKU Growth", _pack(sku, 0), _pack(sku, 1), "Growth")
 
 
 def _render_multi_period_matrix(
