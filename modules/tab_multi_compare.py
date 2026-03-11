@@ -35,138 +35,17 @@ def _spark(values) -> str:
     return "".join(out)
 
 
-def _style_hi_lo(df_numeric: pd.DataFrame):
-    def style_row(row):
-        vals = pd.to_numeric(row, errors="coerce")
-        valid = vals.dropna()
-        styles = [""] * len(row)
-        if valid.empty:
-            return styles
-        hi = valid.max()
-        lo = valid.min()
-        for i, col in enumerate(row.index):
-            val = pd.to_numeric(row[col], errors="coerce")
-            if pd.isna(val):
-                continue
-            if val == hi and hi != lo:
-                styles[i] = "background-color: rgba(46,125,50,0.20); font-weight:700;"
-            elif val == lo and hi != lo:
-                styles[i] = "background-color: rgba(198,40,40,0.20); font-weight:700;"
-        return styles
-
-    return df_numeric.style.apply(style_row, axis=1)
+def _safe_pct_change(cur: float, prev: float) -> float:
+    cur = float(cur)
+    prev = float(prev)
+    if prev == 0:
+        if cur == 0:
+            return 0.0
+        return np.nan
+    return (cur - prev) / prev
 
 
-def _build_matrix(df: pd.DataFrame, labels: list[str], granularity: str, row_dim: str, metric: str) -> pd.DataFrame:
-    pieces = []
-    for lbl in labels:
-        part = filter_by_period_labels(df, [lbl], granularity)
-        grp = part.groupby(row_dim, as_index=False).agg(Value=(metric, "sum"))
-        grp = grp.rename(columns={"Value": lbl})
-        pieces.append(grp)
-
-    if not pieces:
-        return pd.DataFrame(columns=[row_dim])
-
-    out = pieces[0]
-    for p in pieces[1:]:
-        out = out.merge(p, on=row_dim, how="outer")
-
-    out = out.fillna(0.0)
-
-    period_cols = [c for c in labels if c in out.columns]
-    out["Total"] = out[period_cols].sum(axis=1)
-    out["Average"] = out[period_cols].mean(axis=1) if period_cols else 0.0
-    out["Trend"] = out[period_cols].apply(lambda r: _spark(r.tolist()), axis=1) if period_cols else ""
-    return out
-
-
-def _render_matrix_table(df_scope: pd.DataFrame, labels: list[str], granularity: str, row_dim: str, metric: str):
-    st.markdown("### Multi-Period Matrix")
-
-    if not labels:
-        st.info("Select one or more periods.")
-        return
-
-    matrix = _build_matrix(df_scope, labels, granularity, row_dim, metric)
-
-    if matrix.empty:
-        st.info("No data available for the selected periods.")
-        return
-
-    period_cols = [c for c in labels if c in matrix.columns]
-    numeric_cols = period_cols + ["Total", "Average"]
-
-    show = matrix.copy()
-
-    styled = _style_hi_lo(show[period_cols])
-
-    for c in ["Total", "Average"]:
-        if c in show.columns:
-            pass
-
-    formatted = show.copy()
-    for c in period_cols + ["Total", "Average"]:
-        if c in formatted.columns:
-            formatted[c] = formatted[c].map(lambda v: _fmt_value(v, metric))
-
-    # Rebuild styled df from numeric source but with formatted display strings
-    base_numeric = show[[row_dim] + period_cols + ["Total", "Average", "Trend"]].copy()
-    base_display = formatted[[row_dim] + period_cols + ["Total", "Average", "Trend"]].copy()
-
-    def style_row(row):
-        period_vals = pd.to_numeric(show.loc[row.name, period_cols], errors="coerce")
-        valid = period_vals.dropna()
-        styles = [""] * len(base_display.columns)
-        if not valid.empty:
-            hi = valid.max()
-            lo = valid.min()
-            for idx, col in enumerate(base_display.columns):
-                if col in period_cols:
-                    val = pd.to_numeric(show.loc[row.name, col], errors="coerce")
-                    if pd.isna(val):
-                        continue
-                    if val == hi and hi != lo:
-                        styles[idx] = "background-color: rgba(46,125,50,0.20); font-weight:700;"
-                    elif val == lo and hi != lo:
-                        styles[idx] = "background-color: rgba(198,40,40,0.20); font-weight:700;"
-        return styles
-
-    st.dataframe(
-        base_display.style.apply(style_row, axis=1),
-        use_container_width=True,
-        height=520,
-        hide_index=True,
-    )
-
-
-def _render_trend_table(df_scope: pd.DataFrame, labels: list[str], granularity: str, row_dim: str, metric: str):
-    st.markdown("### Trend Summary")
-
-    matrix = _build_matrix(df_scope, labels, granularity, row_dim, metric)
-    if matrix.empty:
-        st.info("No trend data available.")
-        return
-
-    period_cols = [c for c in labels if c in matrix.columns]
-    if not period_cols:
-        st.info("No periods selected.")
-        return
-
-    show = matrix[[row_dim] + period_cols + ["Trend"]].copy()
-    for c in period_cols:
-        show[c] = show[c].map(lambda v: _fmt_value(v, metric))
-
-    render_df(show, height=420)
-
-
-def _render_kpis(df_scope: pd.DataFrame, labels: list[str], granularity: str, metric: str):
-    st.markdown("### Selected Period Summary")
-
-    if not labels:
-        st.info("Select one or more periods.")
-        return
-
+def _render_metric_cards(df_scope: pd.DataFrame, labels: list[str], granularity: str):
     df_sel = filter_by_period_labels(df_scope, labels, granularity)
     if df_sel.empty:
         st.info("No data for the selected periods.")
@@ -194,6 +73,371 @@ def _render_kpis(df_scope: pd.DataFrame, labels: list[str], granularity: str, me
         st.metric("SKUs", f"{skus:,}")
 
 
+def _build_matrix(df: pd.DataFrame, labels: list[str], granularity: str, row_dim: str, metric: str) -> pd.DataFrame:
+    pieces = []
+    for lbl in labels:
+        part = filter_by_period_labels(df, [lbl], granularity)
+        grp = part.groupby(row_dim, as_index=False).agg(Value=(metric, "sum"))
+        grp = grp.rename(columns={"Value": lbl})
+        pieces.append(grp)
+
+    if not pieces:
+        return pd.DataFrame(columns=[row_dim])
+
+    out = pieces[0].copy()
+    for p in pieces[1:]:
+        out = out.merge(p, on=row_dim, how="outer")
+
+    out = out.fillna(0.0)
+    period_cols = [c for c in labels if c in out.columns]
+
+    if period_cols:
+        out["Total"] = out[period_cols].sum(axis=1)
+        out["Average"] = out[period_cols].mean(axis=1)
+        out["Trend"] = out[period_cols].apply(lambda r: _spark(r.tolist()), axis=1)
+        out["Latest"] = out[period_cols[-1]]
+    else:
+        out["Total"] = 0.0
+        out["Average"] = 0.0
+        out["Trend"] = ""
+        out["Latest"] = 0.0
+
+    return out
+
+
+def _style_matrix(display_df: pd.DataFrame, numeric_df: pd.DataFrame, row_dim: str, period_cols: list[str]):
+    def style_row(row):
+        idx = row.name
+        vals = pd.to_numeric(numeric_df.loc[idx, period_cols], errors="coerce")
+        valid = vals.dropna()
+        styles = [""] * len(display_df.columns)
+
+        if valid.empty:
+            return styles
+
+        hi = valid.max()
+        lo = valid.min()
+
+        for j, col in enumerate(display_df.columns):
+            if col not in period_cols:
+                continue
+            val = pd.to_numeric(numeric_df.loc[idx, col], errors="coerce")
+            if pd.isna(val):
+                continue
+            if val == hi and hi != lo:
+                styles[j] = "background-color: rgba(46,125,50,0.20); font-weight:700;"
+            elif val == lo and hi != lo:
+                styles[j] = "background-color: rgba(198,40,40,0.20); font-weight:700;"
+        return styles
+
+    return display_df.style.apply(style_row, axis=1)
+
+
+def _render_multi_period_matrix(
+    df_scope: pd.DataFrame,
+    labels: list[str],
+    granularity: str,
+    row_dim: str,
+    metric: str,
+    sort_by: str,
+):
+    st.markdown("### Multi-Period Matrix")
+
+    matrix = _build_matrix(df_scope, labels, granularity, row_dim, metric)
+    if matrix.empty:
+        st.info("No data available for the selected periods.")
+        return
+
+    period_cols = [c for c in labels if c in matrix.columns]
+
+    if sort_by == "Latest Selected":
+        matrix = matrix.sort_values("Latest", ascending=False)
+    elif sort_by == "Total":
+        matrix = matrix.sort_values("Total", ascending=False)
+    elif sort_by == "Average":
+        matrix = matrix.sort_values("Average", ascending=False)
+    elif sort_by == "Alphabetical":
+        matrix = matrix.sort_values(row_dim, ascending=True)
+
+    show = matrix[[row_dim] + period_cols + ["Total", "Average", "Trend"]].copy()
+    numeric_source = show.copy()
+
+    for c in period_cols + ["Total", "Average"]:
+        if c in show.columns:
+            show[c] = show[c].map(lambda v: _fmt_value(v, metric))
+
+    styled = _style_matrix(show, numeric_source, row_dim, period_cols)
+
+    st.dataframe(
+        styled,
+        use_container_width=True,
+        height=520,
+        hide_index=True,
+    )
+
+
+def _render_yoy_growth_table(
+    df_scope: pd.DataFrame,
+    labels: list[str],
+    granularity: str,
+    row_dim: str,
+    metric: str,
+):
+    st.markdown("### Year-Over-Year Growth")
+
+    if len(labels) < 2:
+        st.info("Select at least two periods to calculate year-over-year growth.")
+        return
+
+    matrix = _build_matrix(df_scope, labels, granularity, row_dim, metric)
+    if matrix.empty:
+        st.info("No growth data available.")
+        return
+
+    out = matrix[[row_dim]].copy()
+    numeric_pairs = []
+
+    for i in range(1, len(labels)):
+        prev_lbl = labels[i - 1]
+        cur_lbl = labels[i]
+        col_name = f"{cur_lbl} vs {prev_lbl}"
+
+        if metric == "Sales":
+            growth_val = matrix[cur_lbl] - matrix[prev_lbl]
+            out[col_name] = growth_val.map(money)
+        else:
+            growth_val = matrix[cur_lbl] - matrix[prev_lbl]
+            out[col_name] = growth_val.map(lambda v: f"{v:,.0f}")
+
+        pct_name = f"{cur_lbl} vs {prev_lbl} %"
+        pct_vals = [
+            _safe_pct_change(cur, prev)
+            for cur, prev in zip(matrix[cur_lbl].tolist(), matrix[prev_lbl].tolist())
+        ]
+        out[pct_name] = [
+            "—" if pd.isna(v) else f"{v:.1%}"
+            for v in pct_vals
+        ]
+        numeric_pairs.append((col_name, growth_val))
+        numeric_pairs.append((pct_name, pd.Series(pct_vals, index=matrix.index)))
+
+    def style_row(row):
+        styles = [""] * len(out.columns)
+        for j, col in enumerate(out.columns):
+            if col == row_dim:
+                continue
+            val = row[col]
+            if isinstance(val, str) and val not in ("—", ""):
+                if val.startswith("-"):
+                    styles[j] = "background-color: rgba(198,40,40,0.16); font-weight:700;"
+                elif val.startswith("$") or val[0].isdigit():
+                    styles[j] = "background-color: rgba(46,125,50,0.16); font-weight:700;"
+        return styles
+
+    st.dataframe(
+        out.style.apply(style_row, axis=1),
+        use_container_width=True,
+        height=420,
+        hide_index=True,
+    )
+
+
+def _render_share_of_total_table(
+    df_scope: pd.DataFrame,
+    labels: list[str],
+    granularity: str,
+    row_dim: str,
+    metric: str,
+):
+    st.markdown("### Share of Total")
+
+    matrix = _build_matrix(df_scope, labels, granularity, row_dim, metric)
+    if matrix.empty:
+        st.info("No share data available.")
+        return
+
+    period_cols = [c for c in labels if c in matrix.columns]
+    share = matrix[[row_dim]].copy()
+
+    for col in period_cols:
+        total = float(matrix[col].sum())
+        if total == 0:
+            share[col] = "0.0%"
+        else:
+            share[col] = (matrix[col] / total).map(lambda v: f"{v:.1%}")
+
+    st.dataframe(
+        share,
+        use_container_width=True,
+        height=420,
+        hide_index=True,
+    )
+
+
+def _render_trend_table(
+    df_scope: pd.DataFrame,
+    labels: list[str],
+    granularity: str,
+    row_dim: str,
+    metric: str,
+    sort_by: str,
+):
+    st.markdown("### Trend Charts")
+
+    matrix = _build_matrix(df_scope, labels, granularity, row_dim, metric)
+    if matrix.empty:
+        st.info("No trend data available.")
+        return
+
+    if sort_by == "Latest Selected":
+        matrix = matrix.sort_values("Latest", ascending=False)
+    elif sort_by == "Total":
+        matrix = matrix.sort_values("Total", ascending=False)
+    elif sort_by == "Average":
+        matrix = matrix.sort_values("Average", ascending=False)
+    elif sort_by == "Alphabetical":
+        matrix = matrix.sort_values(row_dim, ascending=True)
+
+    show = matrix[[row_dim, "Trend", "Total"]].copy()
+    show["Total"] = show["Total"].map(lambda v: _fmt_value(v, metric))
+
+    render_df(show, height=420)
+
+
+def _render_multi_year_seasonality(
+    df_scope: pd.DataFrame,
+    labels: list[str],
+    granularity: str,
+    metric: str,
+):
+    st.markdown("### Multi-Year Seasonality")
+
+    if granularity != "Year":
+        st.info("Multi-Year Seasonality is available when Analyze By is set to Year.")
+        return
+
+    if not labels:
+        st.info("Select one or more years.")
+        return
+
+    df_sel = filter_by_period_labels(df_scope, labels, "Year")
+    if df_sel.empty:
+        st.info("No seasonality data available.")
+        return
+
+    d = df_sel.copy()
+    d["WeekEnd"] = pd.to_datetime(d["WeekEnd"], errors="coerce")
+    d = d[d["WeekEnd"].notna()].copy()
+    d["Year"] = d["WeekEnd"].dt.year.astype(str)
+    d["Quarter"] = d["WeekEnd"].dt.quarter.map(lambda q: f"Q{int(q)}")
+
+    q = d.groupby(["Quarter", "Year"], as_index=False).agg(Value=(metric, "sum"))
+
+    quarter_order = ["Q1", "Q2", "Q3", "Q4"]
+    q["Quarter"] = pd.Categorical(q["Quarter"], categories=quarter_order, ordered=True)
+
+    piv = q.pivot_table(
+        index="Quarter",
+        columns="Year",
+        values="Value",
+        aggfunc="sum",
+        fill_value=0.0,
+    ).reset_index()
+
+    ordered_years = []
+    for lbl in labels:
+        y = str(lbl)
+        if y in piv.columns:
+            ordered_years.append(y)
+
+    show = piv[["Quarter"] + ordered_years].copy()
+    for c in ordered_years:
+        show[c] = show[c].map(lambda v: _fmt_value(v, metric))
+
+    render_df(show, height=260)
+
+
+def _render_performance_score(
+    df_scope: pd.DataFrame,
+    labels: list[str],
+    granularity: str,
+    row_dim: str,
+    metric: str,
+):
+    st.markdown("### Retailer Performance Score" if row_dim == "Retailer" else "### Performance Score")
+
+    if len(labels) < 2:
+        st.info("Select at least two periods to calculate performance score.")
+        return
+
+    matrix = _build_matrix(df_scope, labels, granularity, row_dim, metric)
+    if matrix.empty:
+        st.info("No performance score data available.")
+        return
+
+    period_cols = [c for c in labels if c in matrix.columns]
+    latest_col = period_cols[-1]
+    first_col = period_cols[0]
+
+    total_max = float(matrix["Total"].max()) if not matrix.empty else 0.0
+
+    scores = []
+    for _, row in matrix.iterrows():
+        first_val = float(row[first_col])
+        latest_val = float(row[latest_col])
+        total_val = float(row["Total"])
+        vals = [float(row[c]) for c in period_cols]
+
+        growth_pct = _safe_pct_change(latest_val, first_val)
+        growth_score = 0.0 if pd.isna(growth_pct) else max(0.0, min(100.0, 50.0 + (growth_pct * 100.0)))
+
+        total_score = 0.0 if total_max == 0 else (total_val / total_max) * 100.0
+
+        diffs = np.diff(vals) if len(vals) >= 2 else np.array([0.0])
+        pos_moves = float((diffs > 0).sum())
+        momentum_score = 0.0 if len(diffs) == 0 else (pos_moves / len(diffs)) * 100.0
+
+        mean_val = np.mean(vals) if len(vals) else 0.0
+        std_val = np.std(vals) if len(vals) else 0.0
+        cv = 0.0 if mean_val == 0 else std_val / mean_val
+        stability_score = max(0.0, 100.0 - (cv * 100.0))
+
+        score = (
+            0.40 * growth_score +
+            0.30 * total_score +
+            0.20 * momentum_score +
+            0.10 * stability_score
+        )
+
+        if len(vals) >= 2:
+            if vals[-1] > vals[-2]:
+                momentum_label = "Rising"
+            elif vals[-1] < vals[-2]:
+                momentum_label = "Falling"
+            else:
+                momentum_label = "Flat"
+        else:
+            momentum_label = "Flat"
+
+        scores.append(
+            {
+                row_dim: row[row_dim],
+                "Score": score,
+                "Growth": "—" if pd.isna(growth_pct) else f"{growth_pct:.1%}",
+                "Total": total_val,
+                "Momentum": momentum_label,
+                "Trend": row["Trend"],
+            }
+        )
+
+    out = pd.DataFrame(scores).sort_values("Score", ascending=False).reset_index(drop=True)
+    out.insert(0, "Rank", range(1, len(out) + 1))
+    out["Score"] = out["Score"].map(lambda v: f"{v:.0f}")
+    out["Total"] = out["Total"].map(lambda v: _fmt_value(v, metric))
+
+    render_df(out, height=420)
+
+
 def render(ctx: dict):
     df_scope = ctx["df_scope"].copy()
 
@@ -204,7 +448,7 @@ def render(ctx: dict):
         st.info("No data available with the current filters.")
         return
 
-    c1, c2, c3, c4 = st.columns([1.0, 2.2, 1.2, 1.0])
+    c1, c2, c3, c4, c5 = st.columns([1.0, 2.2, 1.2, 1.0, 1.0])
 
     with c1:
         granularity = st.selectbox(
@@ -229,7 +473,7 @@ def render(ctx: dict):
     with c3:
         row_dim = st.selectbox(
             "Rows By",
-            ["Retailer", "Vendor"],
+            ["Retailer", "Vendor", "SKU"],
             index=0,
             key="multi_compare_row_dim_single",
         )
@@ -242,13 +486,24 @@ def render(ctx: dict):
             key="multi_compare_metric_single",
         )
 
+    with c5:
+        sort_by = st.selectbox(
+            "Sort By",
+            ["Latest Selected", "Total", "Average", "Alphabetical"],
+            index=0,
+            key="multi_compare_sort_single",
+        )
+
     if not labels:
         st.info(f"Select one or more {granularity.lower()}s to continue.")
         return
 
-    # keep selected order from options so trend left→right is chronological based on list ordering
     ordered_labels = [x for x in options if x in labels]
 
-    _render_kpis(df_scope, ordered_labels, granularity, metric)
-    _render_matrix_table(df_scope, ordered_labels, granularity, row_dim, metric)
-    _render_trend_table(df_scope, ordered_labels, granularity, row_dim, metric)
+    _render_metric_cards(df_scope, ordered_labels, granularity)
+    _render_multi_period_matrix(df_scope, ordered_labels, granularity, row_dim, metric, sort_by)
+    _render_yoy_growth_table(df_scope, ordered_labels, granularity, row_dim, metric)
+    _render_share_of_total_table(df_scope, ordered_labels, granularity, row_dim, metric)
+    _render_trend_table(df_scope, ordered_labels, granularity, row_dim, metric, sort_by)
+    _render_multi_year_seasonality(df_scope, ordered_labels, granularity, metric)
+    _render_performance_score(df_scope, ordered_labels, granularity, row_dim, metric)
