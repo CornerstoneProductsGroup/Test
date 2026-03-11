@@ -239,14 +239,15 @@ def _stacked_kpi_card(title: str, first: dict | None, second: dict | None, value
         </div>
         """
 
-    divider = "<div style='height:1px; background:rgba(128,128,128,0.20); margin:10px 0;'></div>"
-
     st.markdown(
         f"""
         <div class="kpi-card" style="min-height:215px;">
             <div class="kpi-title" style="margin-bottom:8px;">{title}</div>
+
             {_render_item("#1", first)}
-            {divider}
+
+            <div style="height:1px; background:rgba(128,128,128,0.20); margin:10px 0;"></div>
+
             {_render_item("#2", second)}
         </div>
         """,
