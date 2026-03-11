@@ -8,7 +8,7 @@ import streamlit as st
 from .app_core import read_weekly_workbook
 from .shared_core import (APP_TITLE, load_vendor_map, load_store, save_store, enrich_sales, available_month_labels, available_year_labels, filter_by_period_labels, period_from_df, compact_selection_label, pick_period, filter_by_period, period_prev_same_length, period_yoy, ab_labels, format_period_range, calc_kpis, drivers, money, render_data_management_center, first_sale_ever, new_placement)
 from .ui_styles import apply_global_styles
-from . import tab_standard_intelligence, tab_month_year_compare, tab_multi_compare
+from . import tab_standard_intelligence, tab_month_year_compare, tab_multi_compare, tab_lookup_center
 
 def run_app():
     st.set_page_config(page_title=APP_TITLE, layout="wide")
@@ -37,7 +37,7 @@ def run_app():
         if scope == "Retailer": scope_pick = st.multiselect("Retailer(s)", options=sorted(df_all["Retailer"].dropna().unique()), default=[])
         elif scope == "Vendor": scope_pick = st.multiselect("Vendor(s)", options=sorted(df_all["Vendor"].dropna().unique()), default=[])
         elif scope == "SKU": scope_pick = st.multiselect("SKU(s)", options=sorted(df_all["SKU"].dropna().unique()), default=[])
-        analysis_view = st.radio("Analysis View", ["Standard Intelligence", "Month / Year Compare", "Multi Month / Year Compare", "Data Management Center"], index=0)
+        analysis_view = st.radio("Analysis View", ["Standard Intelligence", "Month / Year Compare", "Multi Month / Year Compare", "Lookup Center", "Data Management Center"], index=0)
         multi_granularity = "Month"; current_labels_sel=[]; compare_labels_sel=[]
         if analysis_view == "Data Management Center": timeframe = "YTD"; compare_mode = "None"
         elif analysis_view == "Standard Intelligence":
@@ -52,6 +52,9 @@ def run_app():
             current_labels_sel = [current_one] if current_one else []
             compare_labels_sel = [compare_one] if compare_one else []
             compare_mode = "Custom selection" if compare_labels_sel else "None"
+        elif analysis_view == "Lookup Center":
+            timeframe = "Last 8 weeks"
+            compare_mode = "None"
         else:
             multi_granularity = st.selectbox("Compare By", ["Month", "Year"], index=0, key="multi_compare_by")
             period_options = available_month_labels(df_all) if multi_granularity == "Month" else available_year_labels(df_all)
@@ -134,3 +137,4 @@ def run_app():
     if analysis_view == "Standard Intelligence": tab_standard_intelligence.render(ctx)
     elif analysis_view == "Month / Year Compare": tab_month_year_compare.render(ctx)
     elif analysis_view == "Multi Month / Year Compare": tab_multi_compare.render(ctx)
+    elif analysis_view == "Lookup Center": tab_lookup_center.render(ctx)
