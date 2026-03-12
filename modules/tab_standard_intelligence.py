@@ -75,20 +75,28 @@ def render(ctx: dict):
         row = m.sort_values("Δ", ascending=False).iloc[0]
         return str(row[level]), float(row["Sales_A"]), float(row["Sales_B"])
 
-    def _style_delta_cols(df_display: pd.DataFrame, df_numeric: pd.DataFrame, delta_cols: list[str]):
+    def _style_delta_cols(df_display: pd.DataFrame, df_numeric: pd.DataFrame, delta_cols: list[str], bold_total: bool = False):
         def style_row(row):
             idx = row.name
             styles = [""] * len(df_display.columns)
+
+            is_total = False
+            if bold_total:
+                first_val = str(df_display.iloc[idx, 0]) if idx < len(df_display) else ""
+                is_total = first_val == "TOTAL"
+
             for j, col in enumerate(df_display.columns):
-                if col not in delta_cols or col not in df_numeric.columns:
-                    continue
-                val = pd.to_numeric(df_numeric.loc[idx, col], errors="coerce")
-                if pd.isna(val):
-                    continue
-                if val > 0:
-                    styles[j] = "color:#2e7d32; font-weight:700;"
-                elif val < 0:
-                    styles[j] = "color:#c62828; font-weight:700;"
+                style_bits = []
+                if is_total:
+                    style_bits.append("font-weight:800; border-top:2px solid rgba(128,128,128,0.4);")
+                if col in delta_cols and col in df_numeric.columns:
+                    val = pd.to_numeric(df_numeric.loc[idx, col], errors="coerce")
+                    if pd.notna(val):
+                        if val > 0:
+                            style_bits.append("color:#2e7d32; font-weight:700;")
+                        elif val < 0:
+                            style_bits.append("color:#c62828; font-weight:700;")
+                styles[j] = " ".join(style_bits)
             return styles
 
         return df_display.style.apply(style_row, axis=1)
@@ -115,29 +123,27 @@ def render(ctx: dict):
         out = a.merge(b, on=group_col, how="outer").fillna(0.0)
         out["Sales_Δ"] = out["Sales_A"] - out["Sales_B"]
         total_delta = float(out["Sales_Δ"].sum()) if not out.empty else 0.0
-        if total_delta != 0:
-            out["Contribution_%"] = out["Sales_Δ"] / total_delta
-        else:
-            out["Contribution_%"] = 0.0
+        out["Contribution_%"] = (out["Sales_Δ"] / total_delta) if total_delta != 0 else 0.0
         return out.sort_values("Sales_Δ", ascending=False).reset_index(drop=True)
 
-    def _display_hierarchy(df_in: pd.DataFrame, group_col: str, color_delta: bool = False):
+    def _display_hierarchy(df_in: pd.DataFrame, group_col: str, height: int = 420):
         show = df_in.copy()
         numeric = show.copy()
+
         show["Sales_A"] = show["Sales_A"].map(money)
         show["Sales_B"] = show["Sales_B"].map(money)
         show["Sales_Δ"] = show["Sales_Δ"].map(money)
         show["Contribution_%"] = show["Contribution_%"].map(pct_fmt)
+
         show = rename_ab_columns(show, a_lbl, b_lbl)
         numeric = rename_ab_columns(numeric, a_lbl, b_lbl)
+
         sales_a_col = f"Sales ({a_lbl})"
         sales_b_col = f"Sales ({b_lbl})" if b_lbl else "Sales (Comparison)"
         cols = [group_col, sales_a_col, sales_b_col, "Sales_Δ", "Contribution_%"]
-        if color_delta:
-            styled = _style_delta_cols(show[cols], numeric[cols], ["Sales_Δ"])
-            st.dataframe(styled, use_container_width=True, height=260, hide_index=True)
-        else:
-            render_df(show[cols], height=260)
+
+        styled = _style_delta_cols(show[cols], numeric[cols], ["Sales_Δ"], bold_total=False)
+        st.dataframe(styled, use_container_width=True, height=height, hide_index=True)
 
     def _compute_lifecycle_custom(df_src: pd.DataFrame, lookback_weeks: int) -> pd.DataFrame:
         d = df_src.copy()
@@ -163,14 +169,13 @@ def render(ctx: dict):
 
         sku_week = (
             look.groupby(["SKU", "WeekEnd"], as_index=False)
-            .agg(Sales=("Sales", "sum"), Units=("Units", "sum"))
+            .agg(Sales=("Sales", "sum"))
         )
 
         sku_tot = (
             look.groupby("SKU", as_index=False)
             .agg(
                 Sales_lookback=("Sales", "sum"),
-                Units_lookback=("Units", "sum"),
             )
         )
 
@@ -211,6 +216,7 @@ def render(ctx: dict):
         diffs = pivot.diff(axis=1).iloc[:, 1:] if pivot.shape[1] >= 2 else pd.DataFrame(index=pivot.index)
         weeks_up = (diffs > 0).sum(axis=1) if not diffs.empty else pd.Series(0, index=pivot.index)
         weeks_down = (diffs < 0).sum(axis=1) if not diffs.empty else pd.Series(0, index=pivot.index)
+        avg_weekly_sales = pivot.mean(axis=1)
 
         trend_vals = []
         stage_vals = []
@@ -267,6 +273,7 @@ def render(ctx: dict):
                 "Weeks With Sales": weeks_with_sales.values,
                 "Weeks Up": weeks_up.reindex(pivot.index).fillna(0).astype(int).values,
                 "Weeks Down": weeks_down.reindex(pivot.index).fillna(0).astype(int).values,
+                "Avg_Weekly_Sales": avg_weekly_sales.values,
                 "Stage": stage_vals,
             }
         )
@@ -278,7 +285,9 @@ def render(ctx: dict):
 
         out["Last_Week_Sales"] = out["Last_Week_Sales"].fillna(0.0)
         out["Prev_Week_Sales"] = out["Prev_Week_Sales"].fillna(0.0)
+        out["Avg_Weekly_Sales"] = out["Avg_Weekly_Sales"].fillna(0.0)
         out["WoW_Sales_Δ"] = out["Last_Week_Sales"] - out["Prev_Week_Sales"]
+        out["Last_Week_vs_Avg"] = out["Last_Week_Sales"] - out["Avg_Weekly_Sales"]
 
         return out.sort_values(["Sales_lookback", "SKU"], ascending=[False, True]).reset_index(drop=True)
 
@@ -469,6 +478,9 @@ def render(ctx: dict):
                 numeric["Average"] = np.nan
                 numeric["Δ vs Avg"] = np.nan
 
+        total_row = pd.DataFrame([numeric.sum(numeric_only=True)], index=["TOTAL"])
+        numeric = pd.concat([numeric, total_row], axis=0)
+
         display_df = numeric.copy()
         for c in existing_week_cols:
             display_df[c] = display_df[c].map(lambda x: _fmt_metric_value(x, weekly_metric))
@@ -479,19 +491,20 @@ def render(ctx: dict):
         display_df["Average"] = display_df["Average"].map(lambda x: _fmt_metric_value(x, weekly_metric))
         display_df["Δ vs Avg"] = display_df["Δ vs Avg"].map(lambda x: _colorize_delta_value(x, weekly_metric))
 
-        display_df = display_df.reset_index()
-        numeric_reset = numeric.reset_index()
+        display_df = display_df.reset_index().rename(columns={"index": pivot_dim})
+        numeric_reset = numeric.reset_index().rename(columns={"index": pivot_dim})
 
         styled_weekly = _style_delta_cols(
             display_df,
             numeric_reset,
             ["Δ vs prior week", "Δ vs Avg"],
+            bold_total=True,
         )
 
         st.dataframe(
             styled_weekly,
             use_container_width=True,
-            height=340,
+            height=560,
             hide_index=True,
         )
 
@@ -562,26 +575,35 @@ def render(ctx: dict):
             st.caption("None in this period.")
         else:
             fe = first_ever.copy()
-            fe["FirstWeek"] = fe["FirstWeek"].dt.date.astype(str)
-            render_df(
-                fe.rename(columns={"FirstWeek": "First Week"})[
-                    ["SKU", "First Week", "FirstRetailer", "FirstVendor"]
-                ],
-                height=260,
-            )
+            fe["FirstWeek"] = pd.to_datetime(fe["FirstWeek"], errors="coerce")
+            if "FirstRetailer" in fe.columns:
+                fe["Retailer"] = fe["FirstRetailer"]
+            if "Sales" not in fe.columns:
+                if "FirstSales" in fe.columns:
+                    fe["Sales"] = fe["FirstSales"]
+                else:
+                    fe["Sales"] = np.nan
+            fe["Date"] = fe["FirstWeek"].dt.date.astype(str)
+            fe["Sales"] = fe["Sales"].map(lambda v: "" if pd.isna(v) else money(v))
+            cols = [c for c in ["SKU", "Retailer", "Date", "Sales"] if c in fe.columns]
+            render_df(fe[cols], height=300)
+
     with b:
         st.markdown("**New Retailer Placements**")
         if placements.empty:
             st.caption("None in this period.")
         else:
             pl = placements.copy()
-            pl["FirstWeek"] = pl["FirstWeek"].dt.date.astype(str)
-            render_df(
-                pl.rename(columns={"FirstWeek": "First Week"})[
-                    ["SKU", "Retailer", "Vendor", "First Week"]
-                ],
-                height=260,
-            )
+            pl["FirstWeek"] = pd.to_datetime(pl["FirstWeek"], errors="coerce")
+            if "Sales" not in pl.columns:
+                if "FirstSales" in pl.columns:
+                    pl["Sales"] = pl["FirstSales"]
+                else:
+                    pl["Sales"] = np.nan
+            pl["Date"] = pl["FirstWeek"].dt.date.astype(str)
+            pl["Sales"] = pl["Sales"].map(lambda v: "" if pd.isna(v) else money(v))
+            cols = [c for c in ["SKU", "Retailer", "Date", "Sales"] if c in pl.columns]
+            render_df(pl[cols], height=300)
 
     st.divider()
     st.header("Strategic Intelligence")
@@ -608,39 +630,59 @@ def render(ctx: dict):
 
         lvl1 = _build_hierarchy(dfA, dfB, level1_col)
         st.markdown(f"**Level 1 — {level1_col}s**")
-        _display_hierarchy(lvl1, level1_col, color_delta=True)
+        _display_hierarchy(lvl1, level1_col, height=500)
 
-        lvl1_options = lvl1[level1_col].dropna().astype(str).tolist()
-        if lvl1_options:
-            pick1 = st.selectbox(
-                f"Select {level1_col} for Level 2",
-                lvl1_options,
-                index=0,
-                key="std_contrib_pick1",
-            )
+        lvl1_options = ["(none)"] + lvl1[level1_col].dropna().astype(str).tolist()
+        pick1 = st.selectbox(
+            f"Select {level1_col} for Level 2",
+            lvl1_options,
+            index=0,
+            key="std_contrib_pick1",
+        )
 
+        if pick1 != "(none)":
             dfA_l2 = dfA[dfA[level1_col].astype(str) == str(pick1)].copy()
             dfB_l2 = dfB[dfB[level1_col].astype(str) == str(pick1)].copy()
 
             lvl2 = _build_hierarchy(dfA_l2, dfB_l2, level2_col)
             st.markdown(f"**Level 2 — {level2_col}s inside {pick1}**")
-            _display_hierarchy(lvl2, level2_col, color_delta=True)
+            _display_hierarchy(lvl2, level2_col, height=500)
 
-            lvl2_options = lvl2[level2_col].dropna().astype(str).tolist()
-            if lvl2_options:
-                pick2 = st.selectbox(
-                    f"Select {level2_col} for Level 3",
-                    lvl2_options,
-                    index=0,
-                    key="std_contrib_pick2",
-                )
+            lvl2_options = ["(none)"] + lvl2[level2_col].dropna().astype(str).tolist()
+            pick2 = st.selectbox(
+                f"Select {level2_col} for Level 3",
+                lvl2_options,
+                index=0,
+                key="std_contrib_pick2",
+            )
 
+            if pick2 != "(none)":
                 dfA_l3 = dfA_l2[dfA_l2[level2_col].astype(str) == str(pick2)].copy()
                 dfB_l3 = dfB_l2[dfB_l2[level2_col].astype(str) == str(pick2)].copy()
 
                 lvl3 = _build_hierarchy(dfA_l3, dfB_l3, level3_col)
                 st.markdown(f"**Level 3 — {level3_col}s inside {pick1} → {pick2}**")
-                _display_hierarchy(lvl3, level3_col, color_delta=True)
+                _display_hierarchy(lvl3, level3_col, height=520)
+            else:
+                st.selectbox(
+                    f"Select {level2_col} for Level 3",
+                    ["(none)"],
+                    index=0,
+                    key="std_contrib_pick2_placeholder",
+                )
+        else:
+            st.selectbox(
+                f"Select {level1_col} for Level 2",
+                ["(none)"],
+                index=0,
+                key="std_contrib_pick1_placeholder",
+            )
+            st.selectbox(
+                f"Select {level2_col} for Level 3",
+                ["(none)"],
+                index=0,
+                key="std_contrib_pick2_placeholder_root",
+            )
 
     st.subheader("2) SKU Lifecycle (Launch → Growth → Mature → Decline → Dormant)")
 
@@ -697,18 +739,21 @@ def render(ctx: dict):
 
         rename_map = {
             "Sales_lookback": "Sales (lookback)",
-            "Units_lookback": "Units (lookback)",
             "Last_Week_Sales": "Last Week Sales",
+            "Avg_Weekly_Sales": "Avg Weekly Sales",
+            "Last_Week_vs_Avg": "Last Week vs Avg",
             "WoW_Sales_Δ": "WoW Sales Δ",
         }
         life_show = life_show.rename(columns=rename_map)
 
-        for c in ["Sales (lookback)", "Last Week Sales", "WoW Sales Δ"]:
-            if c in life_show.columns:
-                life_show[c] = life_show[c].map(lambda v: "" if pd.isna(v) else money(v))
+        numeric_life = life_show.copy()
 
-        if "Units (lookback)" in life_show.columns:
-            life_show["Units (lookback)"] = life_show["Units (lookback)"].map(lambda v: f"{v:,.0f}")
+        for c in ["Sales (lookback)", "Last Week Sales", "Avg Weekly Sales", "Last Week vs Avg", "WoW Sales Δ"]:
+            if c in life_show.columns:
+                if c in ["Last Week vs Avg", "WoW Sales Δ"]:
+                    life_show[c] = life_show[c].map(lambda v: "" if pd.isna(v) else f"{'+' if v > 0 else ''}{money(v)}")
+                else:
+                    life_show[c] = life_show[c].map(lambda v: "" if pd.isna(v) else money(v))
 
         if "Weeks With Sales" in life_show.columns:
             life_show["Weeks With Sales"] = life_show["Weeks With Sales"].map(lambda v: f"{int(v):,}")
@@ -725,8 +770,9 @@ def render(ctx: dict):
                 "Stage",
                 "Trend",
                 "Sales (lookback)",
-                "Units (lookback)",
                 "Last Week Sales",
+                "Avg Weekly Sales",
+                "Last Week vs Avg",
                 "WoW Sales Δ",
                 "Weeks Up",
                 "Weeks Down",
@@ -734,7 +780,20 @@ def render(ctx: dict):
             ]
             if c in life_show.columns
         ]
-        render_df(life_show[cols].head(300), height=560)
+
+        styled_life = _style_delta_cols(
+            life_show[cols],
+            numeric_life[cols],
+            ["Last Week vs Avg", "WoW Sales Δ"],
+            bold_total=False,
+        )
+
+        st.dataframe(
+            styled_life,
+            use_container_width=True,
+            height=620,
+            hide_index=True,
+        )
 
     st.divider()
     st.subheader("3) Opportunity Detector (Find expansion + gaps)")
