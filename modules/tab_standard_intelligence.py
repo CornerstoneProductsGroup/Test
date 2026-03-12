@@ -737,7 +737,7 @@ def render(ctx: dict):
         st.markdown("**Stage Summary**")
         render_df(stage_counts, height=220)
 
-        st.markdown("**Lifecycle Detail**")
+               st.markdown("**Lifecycle Detail**")
         life_show = life.copy()
 
         if min_sales > 0 and "Sales_lookback" in life_show.columns:
@@ -751,24 +751,6 @@ def render(ctx: dict):
             "WoW_Sales_Δ": "WoW Sales Δ",
         }
         life_show = life_show.rename(columns=rename_map)
-
-        numeric_life = life_show.copy()
-
-        for c in ["Sales (lookback)", "Last Week Sales", "Avg Weekly Sales", "Last Week vs Avg", "WoW Sales Δ"]:
-            if c in life_show.columns:
-                if c in ["Last Week vs Avg", "WoW Sales Δ"]:
-                    life_show[c] = life_show[c].map(lambda v: "" if pd.isna(v) else f"{'+' if v > 0 else ''}{money(v)}")
-                else:
-                    life_show[c] = life_show[c].map(lambda v: "" if pd.isna(v) else money(v))
-
-        if "Weeks With Sales" in life_show.columns:
-            life_show["Weeks With Sales"] = life_show["Weeks With Sales"].map(lambda v: f"{int(v):,}")
-
-        if "Weeks Up" in life_show.columns:
-            life_show["Weeks Up"] = life_show["Weeks Up"].map(lambda v: f"{int(v):,}")
-
-        if "Weeks Down" in life_show.columns:
-            life_show["Weeks Down"] = life_show["Weeks Down"].map(lambda v: f"{int(v):,}")
 
         cols = [
             c for c in [
@@ -787,6 +769,50 @@ def render(ctx: dict):
             if c in life_show.columns
         ]
 
+        numeric_life = life_show[cols].copy()
+
+        total_row = {"SKU": "TOTAL"}
+        for c in cols:
+            if c == "SKU":
+                continue
+            if c in ["Stage", "Trend"]:
+                total_row[c] = ""
+            elif c in ["Sales (lookback)", "Last Week Sales", "Avg Weekly Sales", "Last Week vs Avg", "WoW Sales Δ"]:
+                total_row[c] = pd.to_numeric(numeric_life[c], errors="coerce").fillna(0).sum()
+            elif c in ["Weeks Up", "Weeks Down", "Weeks With Sales"]:
+                total_row[c] = pd.to_numeric(numeric_life[c], errors="coerce").fillna(0).sum()
+            else:
+                total_row[c] = ""
+
+        numeric_life = pd.concat([numeric_life, pd.DataFrame([total_row])], ignore_index=True)
+        life_show = numeric_life.copy()
+
+        for c in ["Sales (lookback)", "Last Week Sales", "Avg Weekly Sales", "Last Week vs Avg", "WoW Sales Δ"]:
+            if c in life_show.columns:
+                if c in ["Last Week vs Avg", "WoW Sales Δ"]:
+                    life_show[c] = life_show[c].map(
+                        lambda v: "" if pd.isna(v) else f"{'+' if float(v) > 0 else ''}{money(float(v))}"
+                    )
+                else:
+                    life_show[c] = life_show[c].map(
+                        lambda v: "" if pd.isna(v) else money(float(v))
+                    )
+
+        if "Weeks With Sales" in life_show.columns:
+            life_show["Weeks With Sales"] = life_show["Weeks With Sales"].map(
+                lambda v: "" if pd.isna(v) else f"{int(float(v)):,}"
+            )
+
+        if "Weeks Up" in life_show.columns:
+            life_show["Weeks Up"] = life_show["Weeks Up"].map(
+                lambda v: "" if pd.isna(v) else f"{int(float(v)):,}"
+            )
+
+        if "Weeks Down" in life_show.columns:
+            life_show["Weeks Down"] = life_show["Weeks Down"].map(
+                lambda v: "" if pd.isna(v) else f"{int(float(v)):,}"
+            )
+
         life_cfg = {"SKU": st.column_config.TextColumn(width="medium")}
         for c in cols:
             if c != "SKU":
@@ -796,7 +822,7 @@ def render(ctx: dict):
             life_show[cols],
             numeric_life[cols],
             ["Last Week vs Avg", "WoW Sales Δ"],
-            bold_total=False,
+            bold_total=True,
         )
 
         st.dataframe(
