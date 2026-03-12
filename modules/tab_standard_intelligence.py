@@ -143,7 +143,13 @@ def render(ctx: dict):
         cols = [group_col, sales_a_col, sales_b_col, "Sales_Δ", "Contribution_%"]
 
         styled = _style_delta_cols(show[cols], numeric[cols], ["Sales_Δ"], bold_total=False)
-        st.dataframe(styled, use_container_width=True, height=height, hide_index=True)
+        st.dataframe(
+            styled,
+            use_container_width=True,
+            height=height,
+            hide_index=True,
+            column_config={c: st.column_config.TextColumn(width="medium") for c in cols},
+        )
 
     def _compute_lifecycle_custom(df_src: pd.DataFrame, lookback_weeks: int) -> pd.DataFrame:
         d = df_src.copy()
@@ -228,7 +234,6 @@ def render(ctx: dict):
             active_weeks = int((np.array(vals) > 0).sum())
             first_val = vals[0] if vals else 0.0
             last_val = vals[-1] if vals else 0.0
-            total = float(np.sum(vals)) if vals else 0.0
 
             row_fl = first_last[first_last["SKU"] == sku]
             sku_last_sale = pd.to_datetime(row_fl["Last_Sale"].iloc[0]) if not row_fl.empty else pd.NaT
@@ -494,9 +499,11 @@ def render(ctx: dict):
         display_df = display_df.reset_index().rename(columns={"index": pivot_dim})
         numeric_reset = numeric.reset_index().rename(columns={"index": pivot_dim})
 
+        weekly_cols = [pivot_dim] + existing_week_cols + ["Δ vs prior week", "Average", "Δ vs Avg"]
+
         styled_weekly = _style_delta_cols(
-            display_df,
-            numeric_reset,
+            display_df[weekly_cols],
+            numeric_reset[weekly_cols],
             ["Δ vs prior week", "Δ vs Avg"],
             bold_total=True,
         )
@@ -506,6 +513,7 @@ def render(ctx: dict):
             use_container_width=True,
             height=560,
             hide_index=True,
+            column_config={c: st.column_config.TextColumn(width="medium") for c in weekly_cols},
         )
 
     st.subheader("Movers & Trend Leaders")
@@ -663,26 +671,6 @@ def render(ctx: dict):
                 lvl3 = _build_hierarchy(dfA_l3, dfB_l3, level3_col)
                 st.markdown(f"**Level 3 — {level3_col}s inside {pick1} → {pick2}**")
                 _display_hierarchy(lvl3, level3_col, height=520)
-            else:
-                st.selectbox(
-                    f"Select {level2_col} for Level 3",
-                    ["(none)"],
-                    index=0,
-                    key="std_contrib_pick2_placeholder",
-                )
-        else:
-            st.selectbox(
-                f"Select {level1_col} for Level 2",
-                ["(none)"],
-                index=0,
-                key="std_contrib_pick1_placeholder",
-            )
-            st.selectbox(
-                f"Select {level2_col} for Level 3",
-                ["(none)"],
-                index=0,
-                key="std_contrib_pick2_placeholder_root",
-            )
 
     st.subheader("2) SKU Lifecycle (Launch → Growth → Mature → Decline → Dormant)")
 
@@ -793,6 +781,7 @@ def render(ctx: dict):
             use_container_width=True,
             height=620,
             hide_index=True,
+            column_config={c: st.column_config.TextColumn(width="medium") for c in cols},
         )
 
     st.divider()
