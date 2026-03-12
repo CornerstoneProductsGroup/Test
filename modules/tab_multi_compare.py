@@ -151,29 +151,41 @@ def _render_base_metric_cards(df_scope: pd.DataFrame, labels: list[str], granula
         kpi_card("SKUs", f"{skus:,}", "")
 
 
-def _period_entity_summary(df_scope: pd.DataFrame, labels: list[str], granularity: str, dim: str) -> pd.DataFrame:
+def _period_entity_summary(
+    df_scope: pd.DataFrame,
+    labels: list[str],
+    granularity: str,
+    dim: str,
+    metric: str,
+) -> pd.DataFrame:
     rows = []
     for lbl in labels:
         part = filter_by_period_labels(df_scope, [lbl], granularity)
-        if part.empty or dim not in part.columns:
+        if part.empty or dim not in part.columns or metric not in part.columns:
             continue
-        grp = part.groupby(dim, as_index=False).agg(Sales=("Sales", "sum"))
-        total_sales = float(grp["Sales"].sum()) if not grp.empty else 0.0
+        grp = part.groupby(dim, as_index=False).agg(Value=(metric, "sum"))
+        total_value = float(grp["Value"].sum()) if not grp.empty else 0.0
         if grp.empty:
             continue
-        grp["Share"] = np.where(total_sales != 0, grp["Sales"] / total_sales, 0.0)
+        grp["Share"] = np.where(total_value != 0, grp["Value"] / total_value, 0.0)
         grp["Period"] = lbl
-        rows.append(grp[[dim, "Period", "Sales", "Share"]])
+        rows.append(grp[[dim, "Period", "Value", "Share"]])
 
     if not rows:
-        return pd.DataFrame(columns=[dim, "Period", "Sales", "Share"])
+        return pd.DataFrame(columns=[dim, "Period", "Value", "Share"])
 
     out = pd.concat(rows, ignore_index=True)
     out = out.rename(columns={dim: "Entity"})
-    return out.sort_values("Sales", ascending=False).reset_index(drop=True)
+    return out.sort_values("Value", ascending=False).reset_index(drop=True)
 
 
-def _growth_entity_summary(df_scope: pd.DataFrame, labels: list[str], granularity: str, dim: str) -> pd.DataFrame:
+def _growth_entity_summary(
+    df_scope: pd.DataFrame,
+    labels: list[str],
+    granularity: str,
+    dim: str,
+    metric: str,
+) -> pd.DataFrame:
     rows = []
     if len(labels) < 2:
         return pd.DataFrame(columns=[dim, "Period", "Growth", "Pct"])
@@ -181,24 +193,24 @@ def _growth_entity_summary(df_scope: pd.DataFrame, labels: list[str], granularit
     matrices = {}
     for lbl in labels:
         part = filter_by_period_labels(df_scope, [lbl], granularity)
-        if part.empty or dim not in part.columns:
-            matrices[lbl] = pd.DataFrame(columns=[dim, "Sales"])
+        if part.empty or dim not in part.columns or metric not in part.columns:
+            matrices[lbl] = pd.DataFrame(columns=[dim, "Value"])
             continue
-        grp = part.groupby(dim, as_index=False).agg(Sales=("Sales", "sum"))
+        grp = part.groupby(dim, as_index=False).agg(Value=(metric, "sum"))
         matrices[lbl] = grp
 
     for i in range(1, len(labels)):
         prev_lbl = labels[i - 1]
         cur_lbl = labels[i]
-        prev_df = matrices[prev_lbl].rename(columns={"Sales": "PrevSales"})
-        cur_df = matrices[cur_lbl].rename(columns={"Sales": "CurSales"})
+        prev_df = matrices[prev_lbl].rename(columns={"Value": "PrevValue"})
+        cur_df = matrices[cur_lbl].rename(columns={"Value": "CurValue"})
         m = cur_df.merge(prev_df, on=dim, how="outer").fillna(0.0)
         if m.empty:
             continue
-        m["Growth"] = m["CurSales"] - m["PrevSales"]
+        m["Growth"] = m["CurValue"] - m["PrevValue"]
         m["Pct"] = [
             _safe_pct_change(cur, prev)
-            for cur, prev in zip(m["CurSales"].tolist(), m["PrevSales"].tolist())
+            for cur, prev in zip(m["CurValue"].tolist(), m["PrevValue"].tolist())
         ]
         m["Period"] = f"{cur_lbl} vs {prev_lbl}"
         rows.append(m[[dim, "Period", "Growth", "Pct"]])
@@ -212,100 +224,185 @@ def _growth_entity_summary(df_scope: pd.DataFrame, labels: list[str], granularit
     return out
 
 
-def _truncate_text(x: str, max_len: int = 36) -> str:
+def _truncate_text(x: str, max_len: int = 30) -> str:
     x = str(x)
     return x if len(x) <= max_len else x[: max_len - 1] + "…"
 
 
-def _render_native_kpi_box(title: str, first: dict | None, second: dict | None):
+def _pack_period_item(df: pd.DataFrame, idx: int, metric: str):
+    if len(df) <= idx:
+        return None
+    row = df.iloc[idx]
+    return {
+        "name": row["Entity"],
+        "value": _fmt_value(float(row["Value"]), metric),
+        "detail": f"{row['Period']} • {float(row['Share']):.1%} share",
+    }
+
+
+def _pack_growth_item(df: pd.DataFrame, idx: int, metric: str):
+    if len(df) <= idx:
+        return None
+    row = df.iloc[idx]
+    pct_text = "—" if pd.isna(row["Pct"]) else f"{float(row['Pct']):.1%}"
+    return {
+        "name": row["Entity"],
+        "value": _fmt_value(float(row["Growth"]), metric),
+        "detail": f"{row['Period']} • {pct_text}",
+    }
+
+
+def _render_item_block(rank_label: str, item: dict | None):
+    st.markdown(
+        f"<div style='font-size:1.02rem; font-weight:800; line-height:1.1; margin-bottom:4px;'>{rank_label}</div>",
+        unsafe_allow_html=True,
+    )
+
+    if item is None:
+        st.markdown(
+            "<div style='font-size:1.06rem; font-weight:700; line-height:1.25; margin-bottom:10px;'>—</div>",
+            unsafe_allow_html=True,
+        )
+        return
+
+    st.markdown(
+        f"<div style='font-size:1.20rem; font-weight:800; line-height:1.18; margin-bottom:4px;'>{_truncate_text(item['name'])}</div>",
+        unsafe_allow_html=True,
+    )
+    st.markdown(
+        f"<div style='font-size:1.14rem; font-weight:800; line-height:1.15; margin-bottom:4px;'>{item['value']}</div>",
+        unsafe_allow_html=True,
+    )
+    st.markdown(
+        f"<div style='font-size:0.99rem; line-height:1.22; opacity:0.92; margin-bottom:10px;'>{item['detail']}</div>",
+        unsafe_allow_html=True,
+    )
+
+
+def _render_dual_kpi_box(
+    title: str,
+    left_label: str,
+    right_label: str,
+    left_first: dict | None,
+    left_second: dict | None,
+    right_first: dict | None,
+    right_second: dict | None,
+):
     with st.container(border=True):
         st.markdown(
-            f"<div style='font-size:0.95rem; font-weight:700; margin-bottom:10px;'>{title}</div>",
+            f"<div style='font-size:0.96rem; font-weight:700; margin-top:2px; margin-bottom:12px;'>{title}</div>",
             unsafe_allow_html=True,
         )
 
-        def _show_item(rank_label: str, item: dict | None):
-            st.markdown(
-                f"<div style='font-size:1.00rem; font-weight:800; line-height:1.1; margin-bottom:4px;'>{rank_label}</div>",
-                unsafe_allow_html=True,
-            )
+        c1, c2 = st.columns(2)
 
-            if item is None:
-                st.markdown(
-                    "<div style='font-size:1.05rem; font-weight:700; line-height:1.2;'>—</div>",
-                    unsafe_allow_html=True,
-                )
-                return
+        with c1:
+            st.markdown(
+                f"<div style='font-size:0.95rem; font-weight:800; margin-bottom:8px;'>{left_label}</div>",
+                unsafe_allow_html=True,
+            )
+            _render_item_block("#1", left_first)
+            _render_item_block("#2", left_second)
 
+        with c2:
             st.markdown(
-                f"<div style='font-size:1.22rem; font-weight:800; line-height:1.2; margin-bottom:4px;'>{_truncate_text(item['name'])}</div>",
+                f"<div style='font-size:0.95rem; font-weight:800; margin-bottom:8px;'>{right_label}</div>",
                 unsafe_allow_html=True,
             )
-            st.markdown(
-                f"<div style='font-size:1.18rem; font-weight:800; line-height:1.15; margin-bottom:4px;'>{item['value']}</div>",
-                unsafe_allow_html=True,
-            )
-            st.markdown(
-                f"<div style='font-size:0.98rem; line-height:1.2; opacity:0.9;'>{item['detail']}</div>",
-                unsafe_allow_html=True,
-            )
+            _render_item_block("#1", right_first)
+            _render_item_block("#2", right_second)
 
-        _show_item("#1", first)
-        st.write("")
-        _show_item("#2", second)
+        st.markdown("<div style='height:10px;'></div>", unsafe_allow_html=True)
 
 
 def _render_top2_peak_cards(df_scope: pd.DataFrame, labels: list[str], granularity: str):
     st.markdown("### Biggest by Period")
 
-    retail = _period_entity_summary(df_scope, labels, granularity, "Retailer").head(2)
-    vendor = _period_entity_summary(df_scope, labels, granularity, "Vendor").head(2)
-    sku = _period_entity_summary(df_scope, labels, granularity, "SKU").head(2)
+    retail_sales = _period_entity_summary(df_scope, labels, granularity, "Retailer", "Sales").head(2)
+    retail_units = _period_entity_summary(df_scope, labels, granularity, "Retailer", "Units").head(2)
 
-    def _pack(df: pd.DataFrame, idx: int):
-        if len(df) <= idx:
-            return None
-        row = df.iloc[idx]
-        return {
-            "name": row["Entity"],
-            "value": money(float(row["Sales"])),
-            "detail": f"{row['Period']} • {float(row['Share']):.1%} share",
-        }
+    vendor_sales = _period_entity_summary(df_scope, labels, granularity, "Vendor", "Sales").head(2)
+    vendor_units = _period_entity_summary(df_scope, labels, granularity, "Vendor", "Units").head(2)
+
+    sku_sales = _period_entity_summary(df_scope, labels, granularity, "SKU", "Sales").head(2)
+    sku_units = _period_entity_summary(df_scope, labels, granularity, "SKU", "Units").head(2)
 
     c1, c2, c3 = st.columns(3)
     with c1:
-        _render_native_kpi_box("Biggest Retailer", _pack(retail, 0), _pack(retail, 1))
+        _render_dual_kpi_box(
+            "Biggest Retailer",
+            "Sales",
+            "Units",
+            _pack_period_item(retail_sales, 0, "Sales"),
+            _pack_period_item(retail_sales, 1, "Sales"),
+            _pack_period_item(retail_units, 0, "Units"),
+            _pack_period_item(retail_units, 1, "Units"),
+        )
     with c2:
-        _render_native_kpi_box("Biggest Vendor", _pack(vendor, 0), _pack(vendor, 1))
+        _render_dual_kpi_box(
+            "Biggest Vendor",
+            "Sales",
+            "Units",
+            _pack_period_item(vendor_sales, 0, "Sales"),
+            _pack_period_item(vendor_sales, 1, "Sales"),
+            _pack_period_item(vendor_units, 0, "Units"),
+            _pack_period_item(vendor_units, 1, "Units"),
+        )
     with c3:
-        _render_native_kpi_box("Biggest SKU", _pack(sku, 0), _pack(sku, 1))
+        _render_dual_kpi_box(
+            "Biggest SKU",
+            "Sales",
+            "Units",
+            _pack_period_item(sku_sales, 0, "Sales"),
+            _pack_period_item(sku_sales, 1, "Sales"),
+            _pack_period_item(sku_units, 0, "Units"),
+            _pack_period_item(sku_units, 1, "Units"),
+        )
 
 
 def _render_top2_growth_cards(df_scope: pd.DataFrame, labels: list[str], granularity: str):
     st.markdown("### Biggest Growth")
 
-    retail = _growth_entity_summary(df_scope, labels, granularity, "Retailer").head(2)
-    vendor = _growth_entity_summary(df_scope, labels, granularity, "Vendor").head(2)
-    sku = _growth_entity_summary(df_scope, labels, granularity, "SKU").head(2)
+    retail_sales = _growth_entity_summary(df_scope, labels, granularity, "Retailer", "Sales").head(2)
+    retail_units = _growth_entity_summary(df_scope, labels, granularity, "Retailer", "Units").head(2)
 
-    def _pack(df: pd.DataFrame, idx: int):
-        if len(df) <= idx:
-            return None
-        row = df.iloc[idx]
-        pct_text = "—" if pd.isna(row["Pct"]) else f"{float(row['Pct']):.1%}"
-        return {
-            "name": row["Entity"],
-            "value": money(float(row["Growth"])),
-            "detail": f"{row['Period']} • {pct_text}",
-        }
+    vendor_sales = _growth_entity_summary(df_scope, labels, granularity, "Vendor", "Sales").head(2)
+    vendor_units = _growth_entity_summary(df_scope, labels, granularity, "Vendor", "Units").head(2)
+
+    sku_sales = _growth_entity_summary(df_scope, labels, granularity, "SKU", "Sales").head(2)
+    sku_units = _growth_entity_summary(df_scope, labels, granularity, "SKU", "Units").head(2)
 
     c1, c2, c3 = st.columns(3)
     with c1:
-        _render_native_kpi_box("Retailer Growth", _pack(retail, 0), _pack(retail, 1))
+        _render_dual_kpi_box(
+            "Retailer Growth",
+            "Sales",
+            "Units",
+            _pack_growth_item(retail_sales, 0, "Sales"),
+            _pack_growth_item(retail_sales, 1, "Sales"),
+            _pack_growth_item(retail_units, 0, "Units"),
+            _pack_growth_item(retail_units, 1, "Units"),
+        )
     with c2:
-        _render_native_kpi_box("Vendor Growth", _pack(vendor, 0), _pack(vendor, 1))
+        _render_dual_kpi_box(
+            "Vendor Growth",
+            "Sales",
+            "Units",
+            _pack_growth_item(vendor_sales, 0, "Sales"),
+            _pack_growth_item(vendor_sales, 1, "Sales"),
+            _pack_growth_item(vendor_units, 0, "Units"),
+            _pack_growth_item(vendor_units, 1, "Units"),
+        )
     with c3:
-        _render_native_kpi_box("SKU Growth", _pack(sku, 0), _pack(sku, 1))
+        _render_dual_kpi_box(
+            "SKU Growth",
+            "Sales",
+            "Units",
+            _pack_growth_item(sku_sales, 0, "Sales"),
+            _pack_growth_item(sku_sales, 1, "Sales"),
+            _pack_growth_item(sku_units, 0, "Units"),
+            _pack_growth_item(sku_units, 1, "Units"),
+        )
 
 
 def _render_multi_period_matrix(
