@@ -211,7 +211,7 @@ def _growth_entity_summary(df_scope: pd.DataFrame, labels: list[str], granularit
     return out
 
 
-def _truncate_text(x: str, max_len: int = 32) -> str:
+def _truncate_text(x: str, max_len: int = 36) -> str:
     x = str(x)
     return x if len(x) <= max_len else x[: max_len - 1] + "…"
 
@@ -220,25 +220,22 @@ def _render_native_kpi_box(title: str, first: dict | None, second: dict | None):
     with st.container(border=True):
         st.caption(title)
 
-        if first is not None:
-            st.write("**#1**")
-            st.write(f"**{first['value']}**")
-            st.write(_truncate_text(first["name"]))
-            st.caption(first["detail"])
-        else:
-            st.write("**#1**")
-            st.write("—")
+        def _show_item(rank_label: str, item: dict | None):
+            st.write(f"**{rank_label}**")
+            if item is None:
+                st.write("—")
+                return
 
+            st.markdown(
+                f"<div style='font-size:1.1rem; font-weight:700; line-height:1.25;'>{_truncate_text(item['name'])}</div>",
+                unsafe_allow_html=True,
+            )
+            st.write(f"**{item['value']}**")
+            st.caption(item["detail"])
+
+        _show_item("#1", first)
         st.write("")
-
-        if second is not None:
-            st.write("**#2**")
-            st.write(f"**{second['value']}**")
-            st.write(_truncate_text(second["name"]))
-            st.caption(second["detail"])
-        else:
-            st.write("**#2**")
-            st.write("—")
+        _show_item("#2", second)
 
 
 def _render_top2_peak_cards(df_scope: pd.DataFrame, labels: list[str], granularity: str):
