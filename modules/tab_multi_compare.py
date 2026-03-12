@@ -211,45 +211,34 @@ def _growth_entity_summary(df_scope: pd.DataFrame, labels: list[str], granularit
     return out
 
 
-def _truncate_text(x: str, max_len: int = 26) -> str:
+def _truncate_text(x: str, max_len: int = 32) -> str:
     x = str(x)
     return x if len(x) <= max_len else x[: max_len - 1] + "…"
 
 
-def _stacked_kpi_card(title: str, first: dict | None, second: dict | None, value_key: str):
-    def _render_item(rank_label: str, item: dict | None) -> str:
-        if item is None:
-            return f"""
-            <div style="padding:2px 0 2px 0;">
-                <div class="kpi-title">{rank_label}</div>
-                <div style="font-size:15px; font-weight:700; color:var(--text-color);">—</div>
-            </div>
-            """
+def _render_native_kpi_box(title: str, first: dict | None, second: dict | None):
+    with st.container(border=True):
+        st.caption(title)
 
-        value_html = item["value"]
-        detail_html = item["detail"]
-        name_html = _truncate_text(item["name"])
+        if first is not None:
+            st.write("**#1**")
+            st.write(f"**{first['value']}**")
+            st.write(_truncate_text(first["name"]))
+            st.caption(first["detail"])
+        else:
+            st.write("**#1**")
+            st.write("—")
 
-        return f"""
-        <div style="padding:2px 0 2px 0;">
-            <div class="kpi-title">{rank_label}</div>
-            <div style="font-size:18px; font-weight:800; line-height:1.15; color:var(--text-color);">{value_html}</div>
-            <div style="font-size:15px; font-weight:700; line-height:1.2; color:var(--text-color); margin-top:4px;">{name_html}</div>
-            <div class="kpi-delta" style="margin-top:4px;">{detail_html}</div>
-        </div>
-        """
+        st.write("")
 
-    st.markdown(
-        f"""
-        <div class="kpi-card" style="min-height:215px;">
-            <div class="kpi-title" style="margin-bottom:8px;">{title}</div>
-            {_render_item("#1", first)}
-            <div style="height:12px;"></div>
-            {_render_item("#2", second)}
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
+        if second is not None:
+            st.write("**#2**")
+            st.write(f"**{second['value']}**")
+            st.write(_truncate_text(second["name"]))
+            st.caption(second["detail"])
+        else:
+            st.write("**#2**")
+            st.write("—")
 
 
 def _render_top2_peak_cards(df_scope: pd.DataFrame, labels: list[str], granularity: str):
@@ -271,11 +260,11 @@ def _render_top2_peak_cards(df_scope: pd.DataFrame, labels: list[str], granulari
 
     c1, c2, c3 = st.columns(3)
     with c1:
-        _stacked_kpi_card("Biggest Retailer", _pack(retail, 0), _pack(retail, 1), "Sales")
+        _render_native_kpi_box("Biggest Retailer", _pack(retail, 0), _pack(retail, 1))
     with c2:
-        _stacked_kpi_card("Biggest Vendor", _pack(vendor, 0), _pack(vendor, 1), "Sales")
+        _render_native_kpi_box("Biggest Vendor", _pack(vendor, 0), _pack(vendor, 1))
     with c3:
-        _stacked_kpi_card("Biggest SKU", _pack(sku, 0), _pack(sku, 1), "Sales")
+        _render_native_kpi_box("Biggest SKU", _pack(sku, 0), _pack(sku, 1))
 
 
 def _render_top2_growth_cards(df_scope: pd.DataFrame, labels: list[str], granularity: str):
@@ -298,11 +287,11 @@ def _render_top2_growth_cards(df_scope: pd.DataFrame, labels: list[str], granula
 
     c1, c2, c3 = st.columns(3)
     with c1:
-        _stacked_kpi_card("Retailer Growth", _pack(retail, 0), _pack(retail, 1), "Growth")
+        _render_native_kpi_box("Retailer Growth", _pack(retail, 0), _pack(retail, 1))
     with c2:
-        _stacked_kpi_card("Vendor Growth", _pack(vendor, 0), _pack(vendor, 1), "Growth")
+        _render_native_kpi_box("Vendor Growth", _pack(vendor, 0), _pack(vendor, 1))
     with c3:
-        _stacked_kpi_card("SKU Growth", _pack(sku, 0), _pack(sku, 1), "Growth")
+        _render_native_kpi_box("SKU Growth", _pack(sku, 0), _pack(sku, 1))
 
 
 def _render_multi_period_matrix(
