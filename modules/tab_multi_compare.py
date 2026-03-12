@@ -219,20 +219,36 @@ def _truncate_text(x: str, max_len: int = 36) -> str:
 
 def _render_native_kpi_box(title: str, first: dict | None, second: dict | None):
     with st.container(border=True):
-        st.caption(title)
+        st.markdown(
+            f"<div style='font-size:0.95rem; font-weight:700; margin-bottom:10px;'>{title}</div>",
+            unsafe_allow_html=True,
+        )
 
         def _show_item(rank_label: str, item: dict | None):
-            st.write(f"**{rank_label}**")
+            st.markdown(
+                f"<div style='font-size:1.00rem; font-weight:800; line-height:1.1; margin-bottom:4px;'>{rank_label}</div>",
+                unsafe_allow_html=True,
+            )
+
             if item is None:
-                st.write("—")
+                st.markdown(
+                    "<div style='font-size:1.05rem; font-weight:700; line-height:1.2;'>—</div>",
+                    unsafe_allow_html=True,
+                )
                 return
 
             st.markdown(
-                f"<div style='font-size:1.1rem; font-weight:700; line-height:1.25;'>{_truncate_text(item['name'])}</div>",
+                f"<div style='font-size:1.22rem; font-weight:800; line-height:1.2; margin-bottom:4px;'>{_truncate_text(item['name'])}</div>",
                 unsafe_allow_html=True,
             )
-            st.write(f"**{item['value']}**")
-            st.caption(item["detail"])
+            st.markdown(
+                f"<div style='font-size:1.18rem; font-weight:800; line-height:1.15; margin-bottom:4px;'>{item['value']}</div>",
+                unsafe_allow_html=True,
+            )
+            st.markdown(
+                f"<div style='font-size:0.98rem; line-height:1.2; opacity:0.9;'>{item['detail']}</div>",
+                unsafe_allow_html=True,
+            )
 
         _show_item("#1", first)
         st.write("")
