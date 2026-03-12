@@ -246,7 +246,7 @@ def _stacked_kpi_card(title: str, first: dict | None, second: dict | None, value
 
             {_render_item("#1", first)}
 
-            <div style="height:1px; background:rgba(128,128,128,0.20); margin:10px 0;"></div>
+            <div style="border-top:1px solid rgba(128,128,128,0.20); margin:10px 0;"></div>
 
             {_render_item("#2", second)}
         </div>
