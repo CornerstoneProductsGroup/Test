@@ -117,6 +117,10 @@ def render(ctx: dict):
         sign = "+" if v > 0 else ""
         return f"{sign}{_fmt_metric_value(v, metric)}"
 
+    def _short_week_label(dt_val) -> str:
+        d = pd.to_datetime(dt_val)
+        return f"{d.month}/{d.day}"
+
     def _build_hierarchy(df_cur: pd.DataFrame, df_cmp: pd.DataFrame, group_col: str) -> pd.DataFrame:
         a = df_cur.groupby(group_col, as_index=False).agg(Sales_A=("Sales", "sum"))
         b = df_cmp.groupby(group_col, as_index=False).agg(Sales_B=("Sales", "sum"))
@@ -148,7 +152,13 @@ def render(ctx: dict):
             use_container_width=True,
             height=height,
             hide_index=True,
-            column_config={c: st.column_config.TextColumn(width="medium") for c in cols},
+            column_config={
+                group_col: st.column_config.TextColumn(width="medium"),
+                sales_a_col: st.column_config.TextColumn(width="small"),
+                sales_b_col: st.column_config.TextColumn(width="small"),
+                "Sales_Δ": st.column_config.TextColumn(width="small"),
+                "Contribution_%": st.column_config.TextColumn(width="small"),
+            },
         )
 
     def _compute_lifecycle_custom(df_src: pd.DataFrame, lookback_weeks: int) -> pd.DataFrame:
@@ -430,7 +440,9 @@ def render(ctx: dict):
         display_weeks_set = set(display_weeks)
 
         wk_disp = wk_metric[wk_metric["WeekEnd"].isin(display_weeks_set)].copy()
-        wk_disp["Week"] = wk_disp["WeekEnd"].dt.date.astype(str)
+
+        week_map = {pd.to_datetime(w): _short_week_label(w) for w in display_weeks}
+        wk_disp["Week"] = wk_disp["WeekEnd"].map(week_map)
 
         piv = wk_disp.pivot_table(
             index=pivot_dim,
@@ -443,7 +455,7 @@ def render(ctx: dict):
         row_order = sorted(wk_disp[pivot_dim].dropna().unique().tolist())
         piv = piv.reindex(row_order)
 
-        display_week_labels = [str(pd.to_datetime(w).date()) for w in display_weeks]
+        display_week_labels = [_short_week_label(w) for w in display_weeks]
         existing_week_cols = [c for c in display_week_labels if c in piv.columns]
         piv = piv.reindex(columns=existing_week_cols, fill_value=0.0)
 
@@ -452,19 +464,17 @@ def render(ctx: dict):
         if len(existing_week_cols) >= 2:
             last_col = existing_week_cols[-1]
             prev_col = existing_week_cols[-2]
-            numeric["Δ vs prior week"] = numeric[last_col] - numeric[prev_col]
+            numeric["Δ vs prior"] = numeric[last_col] - numeric[prev_col]
         else:
-            numeric["Δ vs prior week"] = 0.0
+            numeric["Δ vs prior"] = 0.0
 
         if avg_n is None:
-            numeric["Average"] = np.nan
-            numeric["Δ vs Avg"] = np.nan
+            numeric["Avg"] = np.nan
+            numeric["Δ vs avg"] = np.nan
         else:
             avg_source_weeks = all_weeks[-avg_n:]
-            avg_source_labels = [str(pd.to_datetime(w).date()) for w in avg_source_weeks]
-
             avg_source = wk_metric.copy()
-            avg_source["Week"] = avg_source["WeekEnd"].dt.date.astype(str)
+            avg_source["Week"] = avg_source["WeekEnd"].map(lambda w: _short_week_label(w))
             piv_avg = avg_source.pivot_table(
                 index=pivot_dim,
                 columns="Week",
@@ -473,15 +483,16 @@ def render(ctx: dict):
                 fill_value=0.0,
             )
             piv_avg = piv_avg.reindex(index=numeric.index)
-            avg_existing_cols = [c for c in avg_source_labels if c in piv_avg.columns]
+            avg_existing_cols = [_short_week_label(w) for w in avg_source_weeks]
+            avg_existing_cols = [c for c in avg_existing_cols if c in piv_avg.columns]
 
             if avg_existing_cols:
-                numeric["Average"] = piv_avg[avg_existing_cols].mean(axis=1)
+                numeric["Avg"] = piv_avg[avg_existing_cols].mean(axis=1)
                 current_col = existing_week_cols[-1] if existing_week_cols else None
-                numeric["Δ vs Avg"] = numeric[current_col] - numeric["Average"] if current_col is not None else np.nan
+                numeric["Δ vs avg"] = numeric[current_col] - numeric["Avg"] if current_col is not None else np.nan
             else:
-                numeric["Average"] = np.nan
-                numeric["Δ vs Avg"] = np.nan
+                numeric["Avg"] = np.nan
+                numeric["Δ vs avg"] = np.nan
 
         total_row = pd.DataFrame([numeric.sum(numeric_only=True)], index=["TOTAL"])
         numeric = pd.concat([numeric, total_row], axis=0)
@@ -490,30 +501,37 @@ def render(ctx: dict):
         for c in existing_week_cols:
             display_df[c] = display_df[c].map(lambda x: _fmt_metric_value(x, weekly_metric))
 
-        display_df["Δ vs prior week"] = display_df["Δ vs prior week"].map(
+        display_df["Δ vs prior"] = display_df["Δ vs prior"].map(
             lambda x: _colorize_delta_value(x, weekly_metric)
         )
-        display_df["Average"] = display_df["Average"].map(lambda x: _fmt_metric_value(x, weekly_metric))
-        display_df["Δ vs Avg"] = display_df["Δ vs Avg"].map(lambda x: _colorize_delta_value(x, weekly_metric))
+        display_df["Avg"] = display_df["Avg"].map(lambda x: _fmt_metric_value(x, weekly_metric))
+        display_df["Δ vs avg"] = display_df["Δ vs avg"].map(lambda x: _colorize_delta_value(x, weekly_metric))
 
         display_df = display_df.reset_index().rename(columns={"index": pivot_dim})
         numeric_reset = numeric.reset_index().rename(columns={"index": pivot_dim})
 
-        weekly_cols = [pivot_dim] + existing_week_cols + ["Δ vs prior week", "Average", "Δ vs Avg"]
+        weekly_cols = [pivot_dim] + existing_week_cols + ["Δ vs prior", "Avg", "Δ vs avg"]
 
         styled_weekly = _style_delta_cols(
             display_df[weekly_cols],
             numeric_reset[weekly_cols],
-            ["Δ vs prior week", "Δ vs Avg"],
+            ["Δ vs prior", "Δ vs avg"],
             bold_total=True,
         )
+
+        col_cfg = {pivot_dim: st.column_config.TextColumn(width="medium")}
+        for c in existing_week_cols:
+            col_cfg[c] = st.column_config.TextColumn(width="small")
+        col_cfg["Δ vs prior"] = st.column_config.TextColumn(width="small")
+        col_cfg["Avg"] = st.column_config.TextColumn(width="small")
+        col_cfg["Δ vs avg"] = st.column_config.TextColumn(width="small")
 
         st.dataframe(
             styled_weekly,
             use_container_width=True,
             height=560,
             hide_index=True,
-            column_config={c: st.column_config.TextColumn(width="medium") for c in weekly_cols},
+            column_config=col_cfg,
         )
 
     st.subheader("Movers & Trend Leaders")
@@ -769,6 +787,11 @@ def render(ctx: dict):
             if c in life_show.columns
         ]
 
+        life_cfg = {"SKU": st.column_config.TextColumn(width="medium")}
+        for c in cols:
+            if c != "SKU":
+                life_cfg[c] = st.column_config.TextColumn(width="small")
+
         styled_life = _style_delta_cols(
             life_show[cols],
             numeric_life[cols],
@@ -781,7 +804,7 @@ def render(ctx: dict):
             use_container_width=True,
             height=620,
             hide_index=True,
-            column_config={c: st.column_config.TextColumn(width="medium") for c in cols},
+            column_config=life_cfg,
         )
 
     st.divider()
@@ -795,4 +818,4 @@ def render(ctx: dict):
             with t:
                 render_df(odf, height=420) if not odf.empty else st.caption(
                     "No signals found with current filters/thresholds."
-                )
+                    )
