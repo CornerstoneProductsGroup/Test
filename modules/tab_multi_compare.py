@@ -11,6 +11,7 @@ from .shared_core import (
     available_month_labels,
     available_year_labels,
     filter_by_period_labels,
+    kpi_card,
 )
 
 
@@ -137,17 +138,17 @@ def _render_base_metric_cards(df_scope: pd.DataFrame, labels: list[str], granula
 
     c1, c2, c3, c4, c5, c6 = st.columns(6)
     with c1:
-        st.metric("Total Sales", money(sales))
+        kpi_card("Total Sales", money(sales), "")
     with c2:
-        st.metric("Total Units", f"{units:,.0f}")
+        kpi_card("Total Units", f"{units:,.0f}", "")
     with c3:
-        st.metric("ASP", money(asp))
+        kpi_card("ASP", money(asp), "")
     with c4:
-        st.metric("Retailers", f"{retailers:,}")
+        kpi_card("Retailers", f"{retailers:,}", "")
     with c5:
-        st.metric("Vendors", f"{vendors:,}")
+        kpi_card("Vendors", f"{vendors:,}", "")
     with c6:
-        st.metric("SKUs", f"{skus:,}")
+        kpi_card("SKUs", f"{skus:,}", "")
 
 
 def _period_entity_summary(df_scope: pd.DataFrame, labels: list[str], granularity: str, dim: str) -> pd.DataFrame:
