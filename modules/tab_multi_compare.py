@@ -243,11 +243,8 @@ def _stacked_kpi_card(title: str, first: dict | None, second: dict | None, value
         f"""
         <div class="kpi-card" style="min-height:215px;">
             <div class="kpi-title" style="margin-bottom:8px;">{title}</div>
-
             {_render_item("#1", first)}
-
-            <div style="border-top:1px solid rgba(128,128,128,0.20); margin:10px 0;"></div>
-
+            <div style="height:12px;"></div>
             {_render_item("#2", second)}
         </div>
         """,
