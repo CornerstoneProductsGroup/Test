@@ -75,7 +75,12 @@ def render(ctx: dict):
         row = m.sort_values("Δ", ascending=False).iloc[0]
         return str(row[level]), float(row["Sales_A"]), float(row["Sales_B"])
 
-    def _style_delta_cols(df_display: pd.DataFrame, df_numeric: pd.DataFrame, delta_cols: list[str], bold_total: bool = False):
+    def _style_delta_cols(
+        df_display: pd.DataFrame,
+        df_numeric: pd.DataFrame,
+        delta_cols: list[str],
+        bold_total: bool = False,
+    ):
         def style_row(row):
             idx = row.name
             styles = [""] * len(df_display.columns)
@@ -737,7 +742,7 @@ def render(ctx: dict):
         st.markdown("**Stage Summary**")
         render_df(stage_counts, height=220)
 
-               st.markdown("**Lifecycle Detail**")
+        st.markdown("**Lifecycle Detail**")
         life_show = life.copy()
 
         if min_sales > 0 and "Sales_lookback" in life_show.columns:
@@ -844,4 +849,4 @@ def render(ctx: dict):
             with t:
                 render_df(odf, height=420) if not odf.empty else st.caption(
                     "No signals found with current filters/thresholds."
-                    )
+                )
