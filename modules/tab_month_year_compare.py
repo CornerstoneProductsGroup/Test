@@ -180,6 +180,12 @@ def render_visual_executive_dashboard(
         xmax = float(long_df["Value"].max()) if not long_df.empty else 0.0
         xmax = xmax * 1.32 if xmax > 0 else 1.0
 
+        color_enc = alt.Color(
+            "Series:N",
+            title="",
+            legend=alt.Legend(orient="bottom", direction="horizontal"),
+        )
+
         y_enc = alt.Y(
             f"{dim_name}:N",
             sort=alt.SortField(field="SortTotal", order="descending"),
@@ -201,11 +207,7 @@ def render_visual_executive_dashboard(
                 title="Sales",
                 scale=alt.Scale(domain=[0, xmax], nice=True),
             ),
-            color=alt.Color(
-                "Series:N",
-                title="",
-                legend=alt.Legend(orient="bottom", direction="horizontal"),
-            ),
+            color=color_enc,
             tooltip=[
                 alt.Tooltip(f"{dim_name}:N", title=dim_name),
                 alt.Tooltip("Series:N", title="Series"),
@@ -216,11 +218,21 @@ def render_visual_executive_dashboard(
 
         bars = base.mark_bar(size=11)
 
-        labels = base.mark_text(
-            align="left",
-            dx=6,
-            baseline="middle",
-        ).encode(text="BarLabel:N")
+        labels = (
+            alt.Chart(long_df)
+            .mark_text(
+                align="left",
+                dx=6,
+                baseline="middle",
+            )
+            .encode(
+                y=y_enc,
+                yOffset=yoff_enc,
+                x=alt.X("Value:Q", scale=alt.Scale(domain=[0, xmax], nice=True)),
+                text="BarLabel:N",
+                color=color_enc,
+            )
+        )
 
         return (bars + labels).properties(height=height)
 
@@ -308,7 +320,6 @@ def render_visual_executive_dashboard(
         )
 
         bars = base.mark_bar()
-
         delta_labels = base.mark_text(dx=6, align="left").encode(text="DeltaLabel:N")
         pct_labels = base.mark_text(dx=6, dy=13, align="left").encode(text="PctLabel:N")
 
