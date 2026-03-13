@@ -100,10 +100,15 @@ def render_visual_analysis_view(ctx: dict):
         st.warning("Month / Year visual dashboard function was not found.")
         return
 
+    if analysis_view == "Multi Month / Year Compare":
+        if hasattr(tab_multi_compare, "render_visual_only"):
+            tab_multi_compare.render_visual_only(ctx)
+            return
+        st.warning("Multi Month / Year visual dashboard function was not found.")
+        return
+
     if analysis_view == "Standard Intelligence":
         st.info("Visual Analytics is not built yet for Standard Intelligence.")
-    elif analysis_view == "Multi Month / Year Compare":
-        st.info("Visual Analytics is not built yet for Multi Month / Year Compare.")
     elif analysis_view == "Lookup Center":
         st.info("Visual Analytics is not built yet for Lookup Center.")
 
