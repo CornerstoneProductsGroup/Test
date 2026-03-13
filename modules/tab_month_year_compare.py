@@ -133,8 +133,8 @@ def render_visual_executive_dashboard(
         cur = df_cur.copy()
         cmp = df_cmp.copy()
 
-        cur["Quarter"] = cur["Quarter"].astype(str)
-        cmp["Quarter"] = cmp["Quarter"].astype(str)
+        cur["Quarter"] = cur["Quarter"].astype(str).str.upper().str.strip()
+        cmp["Quarter"] = cmp["Quarter"].astype(str).str.upper().str.strip()
 
         cur = cur[cur["Quarter"].isin(Q_DOMAIN)]
         cmp = cmp[cmp["Quarter"].isin(Q_DOMAIN)]
@@ -156,10 +156,30 @@ def render_visual_executive_dashboard(
 
         out["Quarter"] = pd.Categorical(out["Quarter"], categories=Q_DOMAIN, ordered=True)
         out = out.sort_values(["Period", "Quarter"]).copy()
+
         out["Label"] = out["Value"].map(lambda v: f"{v:,.0f}" if metric == "Units" else money(v))
+
+        out["Start"] = out.groupby("Period")["Value"].cumsum() - out["Value"]
+        out["End"] = out["Start"] + out["Value"]
+
+        out["LabelX"] = out["Start"] + (out["Value"] * 0.08)
+
+        total_by_period = out.groupby("Period")["Value"].transform("sum")
+        out["ShowLabel"] = np.where(
+            (out["Value"] > 0) & (out["Value"] / total_by_period >= 0.08),
+            out["Label"],
+            "",
+        )
+
         return out
 
-    def stacked_total_chart(metric_name: str, df_cur: pd.DataFrame, df_cmp: pd.DataFrame, fallback_cur: float, fallback_cmp: float):
+    def stacked_total_chart(
+        metric_name: str,
+        df_cur: pd.DataFrame,
+        df_cmp: pd.DataFrame,
+        fallback_cur: float,
+        fallback_cmp: float,
+    ):
         metric = "Units" if metric_name == "Units" else "Sales"
         stacked = prep_quarter_stacked(df_cur, df_cmp, metric)
 
@@ -213,6 +233,7 @@ def render_visual_executive_dashboard(
                 color=alt.Color(
                     "Quarter:N",
                     scale=alt.Scale(domain=Q_DOMAIN, range=Q_RANGE),
+                    sort=Q_DOMAIN,
                     legend=alt.Legend(orient="top", direction="horizontal", title=""),
                 ),
                 order=alt.Order("Quarter:N", sort="ascending"),
@@ -225,18 +246,21 @@ def render_visual_executive_dashboard(
             .properties(height=165)
         )
 
-        text_df = stacked.copy()
-        text_df["ShowLabel"] = np.where(text_df["Value"] > 0, text_df["Label"], "")
-
         labels = (
-            alt.Chart(text_df[text_df["ShowLabel"] != ""])
-            .mark_text(fontSize=13, fontWeight="bold")
+            alt.Chart(stacked[stacked["ShowLabel"] != ""])
+            .mark_text(
+                align="left",
+                baseline="middle",
+                dx=0,
+                fontSize=12,
+                fontWeight="bold",
+                color="#111111",
+            )
             .encode(
                 y=alt.Y("Period:N", sort=PERIOD_DOMAIN),
-                x=alt.X("Value:Q", stack="center"),
-                detail="Quarter:N",
+                x=alt.X("LabelX:Q", title=metric_name),
                 text="ShowLabel:N",
-                color=alt.value("#111111"),
+                detail="Quarter:N",
             )
         )
 
