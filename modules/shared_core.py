@@ -12,6 +12,7 @@ from typing import Dict, List, Optional, Tuple
 import numpy as np
 import pandas as pd
 import streamlit as st
+from .quarter_utils import add_quarter_columns
 
 # Reuse ingestion helpers from the current (legacy) app where possible.
 from modules.app_core import read_weekly_workbook, parse_date_range_from_filename
@@ -128,6 +129,11 @@ def enrich_sales(df_raw: pd.DataFrame, vm: pd.DataFrame) -> pd.DataFrame:
     df["WeekEnd"] = df["EndDate"].fillna(df["StartDate"])
     df["WeekEnd"] = pd.to_datetime(df["WeekEnd"], errors="coerce")
     df["Year"] = df["WeekEnd"].dt.year
+    df["MonthNum"] = df["WeekEnd"].dt.month
+    df["QuarterNum"] = df["WeekEnd"].dt.quarter
+    df["Quarter"] = df["QuarterNum"].map(lambda q: f"Q{int(q)}" if pd.notna(q) else np.nan)
+    df["YearQuarter"] = np.where(df["Year"].notna() & df["Quarter"].notna(), df["Year"].astype("Int64").astype(str) + " " + df["Quarter"].astype(str), np.nan)
+    df = add_quarter_columns(df, week_column="WeekEnd")
     # Display label like "2026-01-05 / 2026-01-09"
     df["WeekLabel"] = df.apply(
         lambda r: (f"{r['StartDate'].date()} / {r['EndDate'].date()}" if pd.notna(r["StartDate"]) and pd.notna(r["EndDate"]) else (str(r["WeekEnd"].date()) if pd.notna(r["WeekEnd"]) else "")),

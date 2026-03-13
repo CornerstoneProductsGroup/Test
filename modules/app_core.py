@@ -53,6 +53,7 @@ import streamlit as st
 from .quarter_utils import add_quarter_columns
 
 
+
 def style_numeric_posneg(df: pd.DataFrame, cols: list[str]):
     def _s(v):
         try:
