@@ -31,6 +31,20 @@ def render(ctx: dict):
         .kpi-card .top-two-item .kpi-value{font-size:30px !important;}
         .kpi-card .top-two-item .kpi-delta{font-size:14px !important;}
         .kpi-card .top-two-item .kpi-sub{font-size:14px !important;}
+
+        .compare-chart-card{
+            border:1px solid rgba(120,120,120,0.28);
+            border-radius:16px;
+            padding:14px 14px 8px 14px;
+            margin:0 0 14px 0;
+            background:rgba(255,255,255,0.02);
+            box-shadow:0 1px 2px rgba(0,0,0,0.04);
+        }
+        .compare-chart-card h4,
+        .compare-chart-card h3{
+            margin-top:0.1rem !important;
+            margin-bottom:0.6rem !important;
+        }
         </style>
         """,
         unsafe_allow_html=True,
@@ -89,6 +103,13 @@ def render_visual_executive_dashboard(
     PERIOD_RANGE = ["#1f77b4", "#ff7f0e"]
     POSITIVE_BAR = "#2e7d32"
     NEGATIVE_BAR = "#c62828"
+
+    def open_chart_card(title: str):
+        st.markdown('<div class="compare-chart-card">', unsafe_allow_html=True)
+        st.markdown(f"#### {title}")
+
+    def close_chart_card():
+        st.markdown("</div>", unsafe_allow_html=True)
 
     def pct_change(cur: float, prev: float):
         if prev == 0:
@@ -155,7 +176,7 @@ def render_visual_executive_dashboard(
 
         labels = (
             alt.Chart(chart_df)
-            .mark_text(dy=-8, fontSize=12)
+            .mark_text(dy=-8, fontSize=14, fontWeight="bold")
             .encode(
                 x=alt.X("Period:N"),
                 y=alt.Y("Value:Q"),
@@ -246,7 +267,8 @@ def render_visual_executive_dashboard(
                 align="left",
                 dx=6,
                 baseline="middle",
-                fontSize=11,
+                fontSize=13,
+                fontWeight="bold",
             )
             .encode(
                 y=y_enc,
@@ -313,7 +335,13 @@ def render_visual_executive_dashboard(
 
         labels = (
             alt.Chart(df)
-            .mark_text(align=label_align, dx=label_dx, color=bar_color, fontSize=11)
+            .mark_text(
+                align=label_align,
+                dx=label_dx,
+                color=bar_color,
+                fontSize=13,
+                fontWeight="bold",
+            )
             .encode(
                 y=alt.Y("SKU:N", sort=order, title=""),
                 x=x_enc,
@@ -368,7 +396,7 @@ def render_visual_executive_dashboard(
 
         pos_delta_labels = (
             alt.Chart(pos_df)
-            .mark_text(dx=6, align="left", fontSize=11)
+            .mark_text(dx=6, align="left", fontSize=13, fontWeight="bold")
             .encode(
                 y=alt.Y("Retailer:N", sort=order, title=""),
                 x=alt.X("Delta:Q", scale=x_scale),
@@ -379,7 +407,7 @@ def render_visual_executive_dashboard(
 
         pos_pct_labels = (
             alt.Chart(pos_df)
-            .mark_text(dx=6, dy=13, align="left", fontSize=11)
+            .mark_text(dx=6, dy=14, align="left", fontSize=12, fontWeight="bold")
             .encode(
                 y=alt.Y("Retailer:N", sort=order, title=""),
                 x=alt.X("Delta:Q", scale=x_scale),
@@ -390,7 +418,7 @@ def render_visual_executive_dashboard(
 
         neg_delta_labels = (
             alt.Chart(neg_df)
-            .mark_text(dx=-6, align="right", fontSize=11)
+            .mark_text(dx=-6, align="right", fontSize=13, fontWeight="bold")
             .encode(
                 y=alt.Y("Retailer:N", sort=order, title=""),
                 x=alt.X("Delta:Q", scale=x_scale),
@@ -401,7 +429,7 @@ def render_visual_executive_dashboard(
 
         neg_pct_labels = (
             alt.Chart(neg_df)
-            .mark_text(dx=-6, dy=13, align="right", fontSize=11)
+            .mark_text(dx=-6, dy=14, align="right", fontSize=12, fontWeight="bold")
             .encode(
                 y=alt.Y("Retailer:N", sort=order, title=""),
                 x=alt.X("Delta:Q", scale=x_scale),
@@ -427,7 +455,7 @@ def render_visual_executive_dashboard(
     sales_col, units_col = st.columns(2)
 
     with sales_col:
-        st.markdown(f"#### Sales Totals ({a_lbl} vs {b_lbl})")
+        open_chart_card(f"Sales Totals ({a_lbl} vs {b_lbl})")
         sales_chart = metric_bar_chart(
             metric_name="Sales",
             cur_val=float(kA["Sales"]),
@@ -436,9 +464,10 @@ def render_visual_executive_dashboard(
             height=320,
         )
         st.altair_chart(sales_chart, use_container_width=True)
+        close_chart_card()
 
     with units_col:
-        st.markdown(f"#### Units Totals ({a_lbl} vs {b_lbl})")
+        open_chart_card(f"Units Totals ({a_lbl} vs {b_lbl})")
         units_chart = metric_bar_chart(
             metric_name="Units",
             cur_val=float(kA["Units"]),
@@ -447,6 +476,7 @@ def render_visual_executive_dashboard(
             height=320,
         )
         st.altair_chart(units_chart, use_container_width=True)
+        close_chart_card()
 
     st.write("")
 
@@ -454,9 +484,10 @@ def render_visual_executive_dashboard(
     driver_r = prep_contrib(driver_r)
 
     if not driver_r.empty:
-        st.markdown("#### Retailer Contribution to Change")
+        open_chart_card("Retailer Contribution to Change")
         rc_chart = contrib_chart(driver_r, height=470)
         st.altair_chart(rc_chart, use_container_width=True)
+        close_chart_card()
 
     retailer = prep_compare_metric(dfA, dfB, "Retailer", metric="Sales", top_n=10)
     vendor = prep_compare_metric(dfA, dfB, "Vendor", metric="Sales", top_n=10)
@@ -464,22 +495,24 @@ def render_visual_executive_dashboard(
     left, right = st.columns(2)
 
     with left:
-        st.markdown("#### Top Retailers")
+        open_chart_card("Top Retailers")
         retailer_long = prep_grouped_share(retailer, "Retailer")
         if retailer_long.empty:
             st.caption("No retailer data available.")
         else:
             retailer_chart = grouped_share_chart(retailer_long, "Retailer")
             st.altair_chart(retailer_chart, use_container_width=True)
+        close_chart_card()
 
     with right:
-        st.markdown("#### Top Vendors")
+        open_chart_card("Top Vendors")
         vendor_long = prep_grouped_share(vendor, "Vendor")
         if vendor_long.empty:
             st.caption("No vendor data available.")
         else:
             vendor_chart = grouped_share_chart(vendor_long, "Vendor")
             st.altair_chart(vendor_chart, use_container_width=True)
+        close_chart_card()
 
     st.write("")
 
@@ -513,20 +546,22 @@ def render_visual_executive_dashboard(
     left2, right2 = st.columns(2)
 
     with left2:
-        st.markdown("#### Top SKU Increases")
+        open_chart_card("Top SKU Increases")
         if inc.empty:
             st.caption("No increasing SKUs found.")
         else:
             inc_chart = mover_chart(inc, "Sales Change", positive=True, height=360)
             st.altair_chart(inc_chart, use_container_width=True)
+        close_chart_card()
 
     with right2:
-        st.markdown("#### Top SKU Decreases")
+        open_chart_card("Top SKU Decreases")
         if dec.empty:
             st.caption("No declining SKUs found.")
         else:
             dec_chart = mover_chart(dec, "Sales Change", positive=False, height=360)
             st.altair_chart(dec_chart, use_container_width=True)
+        close_chart_card()
 
 
 def render_standard_view(
