@@ -716,23 +716,19 @@ def _render_performance_score(
     render_df(out, height=500)
 
 
-# -------------------------
-# Visual analytics helpers
-# -------------------------
-
 RADAR_MONTH_ORDER = [
-    ("Q1", "March", 3),
-    ("Q1", "February", 2),
     ("Q1", "January", 1),
-    ("Q2", "June", 6),
-    ("Q2", "May", 5),
+    ("Q1", "February", 2),
+    ("Q1", "March", 3),
     ("Q2", "April", 4),
-    ("Q3", "September", 9),
-    ("Q3", "August", 8),
+    ("Q2", "May", 5),
+    ("Q2", "June", 6),
     ("Q3", "July", 7),
-    ("Q4", "December", 12),
-    ("Q4", "November", 11),
+    ("Q3", "August", 8),
+    ("Q3", "September", 9),
     ("Q4", "October", 10),
+    ("Q4", "November", 11),
+    ("Q4", "December", 12),
 ]
 
 
@@ -791,9 +787,12 @@ def _render_pie_chart(df: pd.DataFrame, metric: str, title: str):
         st.info(f"No {metric.lower()} pie data available.")
         return
 
+    work = df.copy()
+    work["PctLabel"] = work["Pct"].map(lambda v: f"{float(v):.1%}")
+
     chart = (
-        alt.Chart(df)
-        .mark_arc(outerRadius=145)
+        alt.Chart(work)
+        .mark_arc(outerRadius=150, innerRadius=35)
         .encode(
             theta=alt.Theta("Value:Q"),
             color=alt.Color("PeriodLabel:N", title=""),
@@ -803,21 +802,32 @@ def _render_pie_chart(df: pd.DataFrame, metric: str, title: str):
                 alt.Tooltip("Pct:Q", title="% of total", format=".1%"),
             ],
         )
-        .properties(title=title, height=360)
+        .properties(title=title, height=380)
     )
 
-    labels = (
-        alt.Chart(df)
-        .mark_text(radius=185, size=11)
+    pct_text = (
+        alt.Chart(work)
+        .mark_text(size=13, fontWeight="bold", color="white")
         .encode(
-            theta=alt.Theta("Value:Q"),
+            theta=alt.Theta("Value:Q", stack=True),
+            radius=alt.value(92),
+            text="PctLabel:N",
+        )
+    )
+
+    year_text = (
+        alt.Chart(work)
+        .mark_text(size=11, dy=18)
+        .encode(
+            theta=alt.Theta("Value:Q", stack=True),
+            radius=alt.value(185),
             text="PeriodLabel:N",
         )
     )
 
-    st.altair_chart(chart + labels, use_container_width=True)
+    st.altair_chart(chart + pct_text + year_text, use_container_width=True)
 
-    tbl = df.copy()
+    tbl = work.copy()
     tbl["Value"] = tbl["Value"].map(lambda v: _fmt_value(float(v), metric))
     tbl["Pct"] = tbl["Pct"].map(lambda v: f"{float(v):.1%}")
     st.dataframe(tbl[["PeriodLabel", "Value", "Pct"]], use_container_width=True, hide_index=True)
@@ -844,8 +854,10 @@ def _render_quarterly_stacked(df: pd.DataFrame, metric: str):
         st.info("No quarterly stacked data available.")
         return
 
+    work = df.copy()
+
     bars = (
-        alt.Chart(df)
+        alt.Chart(work)
         .mark_bar()
         .encode(
             x=alt.X("PeriodLabel:N", title="Year"),
@@ -858,15 +870,15 @@ def _render_quarterly_stacked(df: pd.DataFrame, metric: str):
                 alt.Tooltip("Value:Q", title=metric, format=",.2f" if metric == "Sales" else ",.0f"),
             ],
         )
-        .properties(height=420, title=f"{metric} by Quarter, stacked within each selected year")
+        .properties(height=440, title=f"{metric} by Quarter, stacked within each selected year")
     )
 
     text = (
-        alt.Chart(df[df["Value"] > 0])
-        .mark_text(size=10, color="black")
+        alt.Chart(work[work["Value"] > 0])
+        .mark_text(size=11, color="black", fontWeight="bold")
         .encode(
             x=alt.X("PeriodLabel:N"),
-            y=alt.Y("Value:Q", stack="zero"),
+            y=alt.Y("Value:Q", stack="center"),
             detail="Quarter:N",
             order=alt.Order("Quarter:N", sort="ascending"),
             text="Label:N",
@@ -971,7 +983,7 @@ def _all_years_radar_month_df(df_hist: pd.DataFrame) -> pd.DataFrame:
     out = order_df.merge(out, on="MonthNum", how="left").fillna({"TotalSales": 0.0})
     max_sales = float(out["TotalSales"].max()) if not out.empty else 0.0
     out["ScaledSales"] = out["TotalSales"] / max_sales if max_sales > 0 else 0.0
-    out["Label"] = out["Quarter"] + " • " + out["Month"]
+    out["Label"] = out["Month"]
     out["Rank"] = out["TotalSales"].rank(method="dense", ascending=False).astype(int)
     return out
 
@@ -1001,7 +1013,7 @@ def _render_radar(df: pd.DataFrame):
 
     ax.plot(angles, values, linewidth=2)
     ax.fill(angles, values, alpha=0.20)
-    ax.set_title("All-Years Sales Seasonality Radar", pad=24, fontsize=14)
+    ax.set_title("All-Years Sales Seasonality Radar (Jan → Dec)", pad=24, fontsize=14)
 
     st.pyplot(fig, use_container_width=True)
     plt.close(fig)
@@ -1040,7 +1052,7 @@ def render_visual_only(ctx: dict):
         )
 
     with c3:
-        show_radar = st.selectbox(
+        st.selectbox(
             "Radar Source",
             ["All Filtered History"],
             index=0,
@@ -1095,7 +1107,7 @@ def render_visual_only(ctx: dict):
             st.info("No radar data available.")
         else:
             tbl = radar_df[["Quarter", "Month", "TotalSales", "Rank"]].copy()
-            tbl = tbl.sort_values(["Rank", "Quarter", "Month"]).reset_index(drop=True)
+            tbl = tbl.sort_values(["Rank", "Month"]).reset_index(drop=True)
             tbl["TotalSales"] = tbl["TotalSales"].map(money)
             st.dataframe(tbl, use_container_width=True, hide_index=True)
 
