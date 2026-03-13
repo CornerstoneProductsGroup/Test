@@ -124,12 +124,15 @@ def render_visual_executive_dashboard(
             ]
         )
 
+        ymax = float(chart_df["Value"].max()) if not chart_df.empty else 0.0
+        ymax = ymax * 1.18 if ymax > 0 else 1.0
+
         bars = (
             alt.Chart(chart_df)
             .mark_bar(cornerRadiusTopLeft=4, cornerRadiusTopRight=4)
             .encode(
                 x=alt.X("Period:N", title=""),
-                y=alt.Y("Value:Q", title=metric_name),
+                y=alt.Y("Value:Q", title=metric_name, scale=alt.Scale(domain=[0, ymax])),
                 tooltip=[
                     alt.Tooltip("Period:N", title="Period"),
                     alt.Tooltip("Value:Q", title=metric_name, format=value_format),
@@ -161,6 +164,7 @@ def render_visual_executive_dashboard(
             value_name="Value",
         )
 
+        long_df["Series"] = long_df["Series"].replace({"Current": a_lbl, "Compare": b_lbl})
         long_df["SharePct"] = np.where(long_df["Total"] > 0, long_df["Value"] / long_df["Total"], 0.0)
         long_df["BarLabel"] = long_df.apply(
             lambda r: f'{money(r["Value"])} • {r["SharePct"]:.0%}' if r["Value"] > 0 else "",
@@ -169,28 +173,39 @@ def render_visual_executive_dashboard(
         long_df["SortTotal"] = long_df["Total"]
         return long_df
 
-    def grouped_share_chart(long_df: pd.DataFrame, dim_name: str, height: int = 470):
+    def grouped_share_chart(long_df: pd.DataFrame, dim_name: str, height: int = 500):
         if long_df.empty:
             return None
+
+        xmax = float(long_df["Value"].max()) if not long_df.empty else 0.0
+        xmax = xmax * 1.32 if xmax > 0 else 1.0
 
         y_enc = alt.Y(
             f"{dim_name}:N",
             sort=alt.SortField(field="SortTotal", order="descending"),
             title="",
-            scale=alt.Scale(paddingInner=0.32, paddingOuter=0.14),
+            scale=alt.Scale(paddingInner=0.36, paddingOuter=0.16),
         )
 
         yoff_enc = alt.YOffset(
             "Series:N",
-            sort=[a_lbl if a_lbl in long_df["Series"].values else "Current", b_lbl if b_lbl in long_df["Series"].values else "Compare"],
-            scale=alt.Scale(paddingInner=0.18),
+            sort=[a_lbl, b_lbl],
+            scale=alt.Scale(paddingInner=0.28),
         )
 
         base = alt.Chart(long_df).encode(
             y=y_enc,
             yOffset=yoff_enc,
-            x=alt.X("Value:Q", title="Sales"),
-            color=alt.Color("Series:N", title=""),
+            x=alt.X(
+                "Value:Q",
+                title="Sales",
+                scale=alt.Scale(domain=[0, xmax], nice=True),
+            ),
+            color=alt.Color(
+                "Series:N",
+                title="",
+                legend=alt.Legend(orient="bottom", direction="horizontal"),
+            ),
             tooltip=[
                 alt.Tooltip(f"{dim_name}:N", title=dim_name),
                 alt.Tooltip("Series:N", title="Series"),
@@ -199,12 +214,13 @@ def render_visual_executive_dashboard(
             ],
         )
 
-        bars = base.mark_bar(size=14)
+        bars = base.mark_bar(size=11)
 
-        labels = (
-            base.mark_text(align="left", dx=6)
-            .encode(text="BarLabel:N")
-        )
+        labels = base.mark_text(
+            align="left",
+            dx=6,
+            baseline="middle",
+        ).encode(text="BarLabel:N")
 
         return (bars + labels).properties(height=height)
 
@@ -226,14 +242,19 @@ def render_visual_executive_dashboard(
         df = df.copy()
         df["DeltaLabel"] = df["Delta"].map(money)
 
+        xmax = float(df["Delta"].max()) if positive else float(df["Delta"].abs().max())
+        xmax = xmax * 1.30 if xmax > 0 else 1.0
+
         if positive:
             order = alt.SortField(field="Delta", order="descending")
+            x_enc = alt.X("Delta:Q", title=metric_title, scale=alt.Scale(domain=[0, xmax], nice=True))
         else:
             order = alt.SortField(field="Delta", order="ascending")
+            x_enc = alt.X("Delta:Q", title=metric_title, scale=alt.Scale(domain=[-xmax, 0], nice=True))
 
         base = alt.Chart(df).encode(
             y=alt.Y("SKU:N", sort=order, title=""),
-            x=alt.X("Delta:Q", title=metric_title),
+            x=x_enc,
             tooltip=[
                 alt.Tooltip("SKU:N", title="SKU"),
                 alt.Tooltip("Current:Q", title=a_lbl, format=",.2f"),
@@ -244,7 +265,10 @@ def render_visual_executive_dashboard(
 
         bars = base.mark_bar()
 
-        labels = base.mark_text(align="left", dx=6).encode(text="DeltaLabel:N")
+        if positive:
+            labels = base.mark_text(align="left", dx=6).encode(text="DeltaLabel:N")
+        else:
+            labels = base.mark_text(align="right", dx=-6).encode(text="DeltaLabel:N")
 
         return (bars + labels).properties(height=height)
 
@@ -259,13 +283,21 @@ def render_visual_executive_dashboard(
         out["DeltaLabel"] = out["Delta"].map(money)
         return out
 
-    def contrib_chart(df: pd.DataFrame, height: int = 440):
+    def contrib_chart(df: pd.DataFrame, height: int = 460):
         if df.empty:
             return None
 
+        xmax = float(df["Delta"].max()) if not df.empty else 0.0
+        xmin = float(df["Delta"].min()) if not df.empty else 0.0
+        pad = max(abs(xmax), abs(xmin)) * 0.28 if max(abs(xmax), abs(xmin)) > 0 else 1.0
+
         base = alt.Chart(df).encode(
             y=alt.Y("Retailer:N", sort=alt.SortField(field="Delta", order="descending"), title=""),
-            x=alt.X("Delta:Q", title="Sales Delta"),
+            x=alt.X(
+                "Delta:Q",
+                title="Sales Delta",
+                scale=alt.Scale(domain=[xmin - pad, xmax + pad], nice=True),
+            ),
             tooltip=[
                 alt.Tooltip("Retailer:N", title="Retailer"),
                 alt.Tooltip("Current:Q", title=a_lbl, format=",.2f"),
@@ -278,11 +310,7 @@ def render_visual_executive_dashboard(
         bars = base.mark_bar()
 
         delta_labels = base.mark_text(dx=6, align="left").encode(text="DeltaLabel:N")
-
-        pct_labels = (
-            base.mark_text(dx=6, dy=13, align="left")
-            .encode(text="PctLabel:N")
-        )
+        pct_labels = base.mark_text(dx=6, dy=13, align="left").encode(text="PctLabel:N")
 
         return (bars + delta_labels + pct_labels).properties(height=height)
 
@@ -399,7 +427,7 @@ def render_visual_executive_dashboard(
 
     if not driver_r.empty:
         st.markdown("#### Retailer Contribution to Change")
-        rc_chart = contrib_chart(driver_r, height=440)
+        rc_chart = contrib_chart(driver_r, height=460)
         st.altair_chart(rc_chart, use_container_width=True)
 
 
