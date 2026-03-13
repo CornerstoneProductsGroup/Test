@@ -45,27 +45,24 @@ def render_global_view_mode_toggle():
     - existing tab/module content
     - visual analytics versions of those sections
     """
-    st.markdown("")
+    default_mode = st.session_state.get("global_content_view", "Model View")
+
     try:
         selected = st.sidebar.segmented_control(
             "Content View",
             options=["Model View", "Visual Analytics"],
-            default=st.session_state.get("global_content_view", "Model View"),
+            default=default_mode,
             key="global_content_view",
         )
     except Exception:
         selected = st.sidebar.radio(
             "Content View",
             options=["Model View", "Visual Analytics"],
-            index=0 if st.session_state.get("global_content_view", "Model View") == "Model View" else 1,
+            index=0 if default_mode == "Model View" else 1,
             key="global_content_view",
         )
 
-    if not selected:
-        selected = "Model View"
-
-    st.session_state["global_content_view"] = selected
-    return selected
+    return selected or st.session_state.get("global_content_view", "Model View")
 
 
 def get_global_view_mode():
@@ -365,9 +362,6 @@ def render_lookup_center_visual(ctx: dict):
 
 
 def render_current_analysis_view(ctx: dict):
-    """
-    Existing module-driven experience.
-    """
     analysis_view = ctx.get("analysis_view")
 
     if analysis_view == "Standard Intelligence":
@@ -381,9 +375,6 @@ def render_current_analysis_view(ctx: dict):
 
 
 def render_visual_analysis_view(ctx: dict):
-    """
-    New visual/table-first experience driven by the same filters.
-    """
     analysis_view = ctx.get("analysis_view")
 
     if analysis_view == "Standard Intelligence":
@@ -463,7 +454,6 @@ def run_app():
             index=0,
         )
 
-        # NEW GLOBAL TOGGLE
         content_view = render_global_view_mode_toggle()
 
         multi_granularity = "Month"
