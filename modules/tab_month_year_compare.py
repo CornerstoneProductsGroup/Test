@@ -739,7 +739,7 @@ def render_standard_view(
         on="SKU",
         how="left",
     ).fillna(0.0)
-    cmp_only = cmp_only[(cmp_only["Sales"] > 0) & (cmp_ONLY["Current_Sales"] <= 0)].copy()
+    cmp_only = cmp_only[(cmp_only["Sales"] > 0) & (cmp_only["Current_Sales"] <= 0)].copy()
 
     new_count = int(len(cur_only))
     new_sales = float(cur_only["Sales"].sum())
