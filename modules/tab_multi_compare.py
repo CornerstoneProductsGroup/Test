@@ -754,6 +754,7 @@ def _prepare_visual_base(df_scope: pd.DataFrame, labels: list[str], granularity:
         return pd.DataFrame()
 
     df = pd.concat(out, ignore_index=True)
+
     date_col = _find_date_column(df)
     if date_col:
         df[date_col] = pd.to_datetime(df[date_col], errors="coerce")
@@ -771,15 +772,23 @@ def _prepare_visual_base(df_scope: pd.DataFrame, labels: list[str], granularity:
 
 def _pie_chart_df(df: pd.DataFrame, metric: str) -> pd.DataFrame:
     if df.empty or metric not in df.columns:
-        return pd.DataFrame(columns=["PeriodLabel", "Value", "Pct", "Label"])
-    out = df.groupby("PeriodLabel", as_index=False)[metric].sum().rename(columns={metric: "Value"})
+        return pd.DataFrame(columns=["PeriodLabel", "Value", "Pct"])
+
+    out = (
+        df.groupby("PeriodLabel", as_index=False)[metric]
+        .sum()
+        .rename(columns={metric: "Value"})
+    )
+
     total = float(out["Value"].sum()) if not out.empty else 0.0
     out["Pct"] = np.where(total > 0, out["Value"] / total, 0.0)
-    out["Label"] = out.apply(
-        lambda r: f"{r['PeriodLabel']} • {_fmt_value(float(r['Value']), metric)} • {float(r['Pct']):.1%}",
-        axis=1,
-    )
-    return out.sort_values("PeriodLabel").reset_index(drop=True)
+
+    # preserve the visible period order from the multiselect
+    order_map = {lbl: i for i, lbl in enumerate(df["PeriodLabel"].drop_duplicates().tolist())}
+    out["SortOrder"] = out["PeriodLabel"].map(order_map)
+    out = out.sort_values(["SortOrder", "PeriodLabel"]).reset_index(drop=True)
+    out["PctLabel"] = out["Pct"].map(lambda v: f"{float(v):.1%}")
+    return out
 
 
 def _render_pie_chart(df: pd.DataFrame, metric: str, title: str):
@@ -787,17 +796,17 @@ def _render_pie_chart(df: pd.DataFrame, metric: str, title: str):
         st.info(f"No {metric.lower()} pie data available.")
         return
 
-    work = df.copy()
-    work["PctLabel"] = work["Pct"].map(lambda v: f"{float(v):.1%}")
+    order_list = df["PeriodLabel"].tolist()
 
     chart = (
-        alt.Chart(work)
+        alt.Chart(df)
         .mark_arc(outerRadius=150, innerRadius=35)
         .encode(
-            theta=alt.Theta("Value:Q"),
-            color=alt.Color("PeriodLabel:N", title=""),
+            theta=alt.Theta("Value:Q", stack=True),
+            color=alt.Color("PeriodLabel:N", title="", sort=order_list),
+            order=alt.Order("SortOrder:Q", sort="ascending"),
             tooltip=[
-                alt.Tooltip("PeriodLabel:N", title="Year"),
+                alt.Tooltip("PeriodLabel:N", title="Period"),
                 alt.Tooltip("Value:Q", title=metric, format=",.2f" if metric == "Sales" else ",.0f"),
                 alt.Tooltip("Pct:Q", title="% of total", format=".1%"),
             ],
@@ -806,28 +815,30 @@ def _render_pie_chart(df: pd.DataFrame, metric: str, title: str):
     )
 
     pct_text = (
-        alt.Chart(work)
+        alt.Chart(df)
         .mark_text(size=13, fontWeight="bold", color="white")
         .encode(
             theta=alt.Theta("Value:Q", stack=True),
             radius=alt.value(92),
+            order=alt.Order("SortOrder:Q", sort="ascending"),
             text="PctLabel:N",
         )
     )
 
     year_text = (
-        alt.Chart(work)
-        .mark_text(size=11, dy=18)
+        alt.Chart(df)
+        .mark_text(size=11)
         .encode(
             theta=alt.Theta("Value:Q", stack=True),
-            radius=alt.value(185),
+            radius=alt.value(186),
+            order=alt.Order("SortOrder:Q", sort="ascending"),
             text="PeriodLabel:N",
         )
     )
 
     st.altair_chart(chart + pct_text + year_text, use_container_width=True)
 
-    tbl = work.copy()
+    tbl = df.copy()
     tbl["Value"] = tbl["Value"].map(lambda v: _fmt_value(float(v), metric))
     tbl["Pct"] = tbl["Pct"].map(lambda v: f"{float(v):.1%}")
     st.dataframe(tbl[["PeriodLabel", "Value", "Pct"]], use_container_width=True, hide_index=True)
@@ -836,16 +847,28 @@ def _render_pie_chart(df: pd.DataFrame, metric: str, title: str):
 def _quarterly_stacked_df(df: pd.DataFrame, metric: str) -> pd.DataFrame:
     if df.empty or metric not in df.columns or "Quarter" not in df.columns:
         return pd.DataFrame(columns=["PeriodLabel", "Quarter", "Value", "Label"])
+
     out = (
         df.dropna(subset=["Quarter"])
         .groupby(["PeriodLabel", "Quarter"], as_index=False)[metric]
         .sum()
         .rename(columns={metric: "Value"})
     )
+
     q_order = ["Q1", "Q2", "Q3", "Q4"]
     out["Quarter"] = pd.Categorical(out["Quarter"], categories=q_order, ordered=True)
-    out = out.sort_values(["PeriodLabel", "Quarter"]).copy()
+
+    p_order = {lbl: i for i, lbl in enumerate(df["PeriodLabel"].drop_duplicates().tolist())}
+    out["PeriodOrder"] = out["PeriodLabel"].map(p_order)
+
+    out = out.sort_values(["PeriodOrder", "Quarter"]).copy()
     out["Label"] = out["Value"].map(lambda v: _fmt_value(float(v), metric))
+
+    # compute bottom-aligned label positions within each stacked segment
+    out["Start"] = out.groupby("PeriodLabel")["Value"].cumsum() - out["Value"]
+    out["LabelY"] = out["Start"] + (out["Value"] * 0.18)
+    out["ShowLabel"] = np.where(out["Value"] > 0, out["Label"], "")
+
     return out
 
 
@@ -860,12 +883,12 @@ def _render_quarterly_stacked(df: pd.DataFrame, metric: str):
         alt.Chart(work)
         .mark_bar()
         .encode(
-            x=alt.X("PeriodLabel:N", title="Year"),
+            x=alt.X("PeriodLabel:N", title="Period", sort=work["PeriodLabel"].drop_duplicates().tolist()),
             y=alt.Y("Value:Q", title=metric),
             color=alt.Color("Quarter:N", title="", sort=["Q1", "Q2", "Q3", "Q4"]),
             order=alt.Order("Quarter:N", sort="ascending"),
             tooltip=[
-                alt.Tooltip("PeriodLabel:N", title="Year"),
+                alt.Tooltip("PeriodLabel:N", title="Period"),
                 alt.Tooltip("Quarter:N", title="Quarter"),
                 alt.Tooltip("Value:Q", title=metric, format=",.2f" if metric == "Sales" else ",.0f"),
             ],
@@ -874,32 +897,37 @@ def _render_quarterly_stacked(df: pd.DataFrame, metric: str):
     )
 
     text = (
-        alt.Chart(work[work["Value"] > 0])
-        .mark_text(size=11, color="black", fontWeight="bold")
+        alt.Chart(work[work["ShowLabel"] != ""])
+        .mark_text(size=11, color="black", fontWeight="bold", baseline="top")
         .encode(
-            x=alt.X("PeriodLabel:N"),
-            y=alt.Y("Value:Q", stack="center"),
+            x=alt.X("PeriodLabel:N", sort=work["PeriodLabel"].drop_duplicates().tolist()),
+            y=alt.Y("LabelY:Q", title=metric),
             detail="Quarter:N",
-            order=alt.Order("Quarter:N", sort="ascending"),
-            text="Label:N",
+            text="ShowLabel:N",
         )
     )
 
     st.altair_chart(bars + text, use_container_width=True)
 
 
-def _top2_per_year(df: pd.DataFrame, dim: str, metric: str = "Sales") -> pd.DataFrame:
+def _top2_per_period(df: pd.DataFrame, dim: str, metric: str = "Sales") -> pd.DataFrame:
     if df.empty or dim not in df.columns or metric not in df.columns:
         return pd.DataFrame(columns=["PeriodLabel", "Entity", "Value", "Rank", "YLabel"])
+
     grp = (
         df.groupby(["PeriodLabel", dim], as_index=False)[metric]
         .sum()
         .rename(columns={dim: "Entity", metric: "Value"})
     )
     grp["Rank"] = grp.groupby("PeriodLabel")["Value"].rank(method="first", ascending=False)
+
     out = grp[grp["Rank"] <= 2].copy()
     out["Rank"] = out["Rank"].astype(int)
-    out = out.sort_values(["PeriodLabel", "Rank", "Value"], ascending=[True, True, False]).reset_index(drop=True)
+
+    p_order = {lbl: i for i, lbl in enumerate(df["PeriodLabel"].drop_duplicates().tolist())}
+    out["PeriodOrder"] = out["PeriodLabel"].map(p_order)
+
+    out = out.sort_values(["PeriodOrder", "Rank", "Value"], ascending=[True, True, False]).reset_index(drop=True)
     out["YLabel"] = out["PeriodLabel"].astype(str) + " • #" + out["Rank"].astype(str) + " • " + out["Entity"].astype(str)
     out["ValueLabel"] = out["Value"].map(money)
     return out
@@ -924,7 +952,7 @@ def _render_lollipop(df: pd.DataFrame, title: str):
             x2="Value:Q",
             color=alt.Color("PeriodLabel:N", title=""),
             tooltip=[
-                alt.Tooltip("PeriodLabel:N", title="Year"),
+                alt.Tooltip("PeriodLabel:N", title="Period"),
                 alt.Tooltip("Entity:N", title="Name"),
                 alt.Tooltip("Rank:O", title="Rank"),
                 alt.Tooltip("Value:Q", title="Sales", format=",.2f"),
@@ -953,7 +981,10 @@ def _render_lollipop(df: pd.DataFrame, title: str):
         )
     )
 
-    st.altair_chart((rules + dots + text).properties(height=max(260, len(df) * 34), title=title), use_container_width=True)
+    st.altair_chart(
+        (rules + dots + text).properties(height=max(260, len(df) * 34), title=title),
+        use_container_width=True,
+    )
 
 
 def _all_years_radar_month_df(df_hist: pd.DataFrame) -> pd.DataFrame:
@@ -1070,28 +1101,29 @@ def render_visual_only(ctx: dict):
         st.info("No data available for the selected visual periods.")
         return
 
-    st.markdown("### Year Share")
+    st.markdown("### Period Share")
     c_sales, c_units = st.columns(2)
     with c_sales:
-        _render_pie_chart(_pie_chart_df(df_vis, "Sales"), "Sales", "Total Sales by Selected Year/Period")
+        _render_pie_chart(_pie_chart_df(df_vis, "Sales"), "Sales", "Total Sales by Selected Period")
     with c_units:
-        _render_pie_chart(_pie_chart_df(df_vis, "Units"), "Units", "Total Units by Selected Year/Period")
+        _render_pie_chart(_pie_chart_df(df_vis, "Units"), "Units", "Total Units by Selected Period")
 
-    st.markdown("### Quarterly Stacked Bars")
-    q_sales, q_units = st.columns(2)
-    with q_sales:
-        _render_quarterly_stacked(_quarterly_stacked_df(df_vis, "Sales"), "Sales")
-    with q_units:
-        _render_quarterly_stacked(_quarterly_stacked_df(df_vis, "Units"), "Units")
+    if granularity == "Year":
+        st.markdown("### Quarterly Stacked Bars")
+        q_sales, q_units = st.columns(2)
+        with q_sales:
+            _render_quarterly_stacked(_quarterly_stacked_df(df_vis, "Sales"), "Sales")
+        with q_units:
+            _render_quarterly_stacked(_quarterly_stacked_df(df_vis, "Units"), "Units")
 
-    st.markdown("### Biggest 2 by Year")
-    l1, l2, l3 = st.columns(3)
-    with l1:
-        _render_lollipop(_top2_per_year(df_vis, "Retailer", "Sales"), "Biggest 2 Retailers by Selected Year/Period")
-    with l2:
-        _render_lollipop(_top2_per_year(df_vis, "Vendor", "Sales"), "Biggest 2 Vendors by Selected Year/Period")
-    with l3:
-        _render_lollipop(_top2_per_year(df_vis, "SKU", "Sales"), "Biggest 2 SKUs by Selected Year/Period")
+    st.markdown("### Biggest 2 by Selected Period")
+    rv1, rv2 = st.columns(2)
+    with rv1:
+        _render_lollipop(_top2_per_period(df_vis, "Retailer", "Sales"), "Biggest 2 Retailers by Selected Period")
+    with rv2:
+        _render_lollipop(_top2_per_period(df_vis, "Vendor", "Sales"), "Biggest 2 Vendors by Selected Period")
+
+    _render_lollipop(_top2_per_period(df_vis, "SKU", "Sales"), "Biggest 2 SKUs by Selected Period")
 
     st.markdown("### All-Years Seasonality Radar")
     st.caption("Uses all filtered history in the app across all years for the current scope filter.")
