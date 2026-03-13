@@ -101,24 +101,104 @@ def render_visual_executive_dashboard(
             f"<span class='delta-pct' style='color:{color}'>({pct_fmt(pc)})</span>"
         )
 
-    def prep_compare(df_cur: pd.DataFrame, df_cmp: pd.DataFrame, level: str, top_n: int = 10):
-        cur = df_cur.groupby(level, as_index=False).agg(Current=("Sales", "sum"))
-        cmp = df_cmp.groupby(level, as_index=False).agg(Compare=("Sales", "sum"))
+    def prep_compare_metric(
+        df_cur: pd.DataFrame,
+        df_cmp: pd.DataFrame,
+        level: str,
+        metric: str = "Sales",
+        top_n: int = 10,
+    ):
+        cur = df_cur.groupby(level, as_index=False).agg(Current=(metric, "sum"))
+        cmp = df_cmp.groupby(level, as_index=False).agg(Compare=(metric, "sum"))
         out = cur.merge(cmp, on=level, how="outer").fillna(0.0)
         out["Delta"] = out["Current"] - out["Compare"]
-        out["AbsDelta"] = out["Delta"].abs()
-        out = out.sort_values(["Current", level], ascending=[False, True]).head(top_n).copy()
+        out["Total"] = out["Current"] + out["Compare"]
+        out = out.sort_values(["Total", level], ascending=[False, True]).head(top_n).copy()
         return out
 
-    def melt_compare(df: pd.DataFrame, dim_name: str):
+    def metric_bar_chart(metric_name: str, cur_val: float, cmp_val: float, value_format: str, height: int = 320):
+        chart_df = pd.DataFrame(
+            [
+                {"Period": a_lbl, "Value": float(cur_val)},
+                {"Period": b_lbl, "Value": float(cmp_val)},
+            ]
+        )
+
+        bars = (
+            alt.Chart(chart_df)
+            .mark_bar(cornerRadiusTopLeft=4, cornerRadiusTopRight=4)
+            .encode(
+                x=alt.X("Period:N", title=""),
+                y=alt.Y("Value:Q", title=metric_name),
+                tooltip=[
+                    alt.Tooltip("Period:N", title="Period"),
+                    alt.Tooltip("Value:Q", title=metric_name, format=value_format),
+                ],
+            )
+            .properties(height=height)
+        )
+
+        labels = (
+            alt.Chart(chart_df)
+            .mark_text(dy=-8)
+            .encode(
+                x=alt.X("Period:N"),
+                y=alt.Y("Value:Q"),
+                text=alt.Text("Value:Q", format=value_format),
+            )
+        )
+
+        return bars + labels
+
+    def prep_stack_percent(df: pd.DataFrame, dim_name: str):
         if df.empty:
-            return pd.DataFrame(columns=[dim_name, "Series", "Sales"])
-        return df.melt(
-            id_vars=[dim_name],
+            return pd.DataFrame(columns=[dim_name, "Series", "Value", "SharePct", "PctLabel", "SortTotal"])
+
+        long_df = df[[dim_name, "Current", "Compare", "Total"]].melt(
+            id_vars=[dim_name, "Total"],
             value_vars=["Current", "Compare"],
             var_name="Series",
-            value_name="Sales",
+            value_name="Value",
         )
+
+        long_df["SharePct"] = np.where(long_df["Total"] > 0, long_df["Value"] / long_df["Total"], 0.0)
+        long_df["PctLabel"] = np.where(long_df["SharePct"] >= 0.06, (long_df["SharePct"] * 100).round(0).astype(int).astype(str) + "%", "")
+        long_df["SortTotal"] = long_df["Total"]
+        return long_df
+
+    def stacked_share_chart(long_df: pd.DataFrame, dim_name: str, title: str, height: int = 360):
+        if long_df.empty:
+            return None
+
+        bars = (
+            alt.Chart(long_df)
+            .mark_bar()
+            .encode(
+                y=alt.Y(f"{dim_name}:N", sort=alt.SortField(field="SortTotal", order="descending"), title=""),
+                x=alt.X("Value:Q", stack="zero", title="Sales"),
+                color=alt.Color("Series:N", title=""),
+                tooltip=[
+                    alt.Tooltip(f"{dim_name}:N", title=dim_name),
+                    alt.Tooltip("Series:N", title="Series"),
+                    alt.Tooltip("Value:Q", title="Sales", format=",.2f"),
+                    alt.Tooltip("SharePct:Q", title="% of total", format=".0%"),
+                ],
+            )
+            .properties(height=height, title=title)
+        )
+
+        labels = (
+            alt.Chart(long_df[long_df["PctLabel"] != ""])
+            .mark_text(baseline="middle")
+            .encode(
+                y=alt.Y(f"{dim_name}:N", sort=alt.SortField(field="SortTotal", order="descending")),
+                x=alt.X("Value:Q", stack="center"),
+                detail="Series:N",
+                text="PctLabel:N",
+            )
+        )
+
+        return bars + labels
 
     st.markdown("### Executive Dashboard")
 
@@ -132,83 +212,51 @@ def render_visual_executive_dashboard(
 
     st.write("")
 
-    overview = pd.DataFrame(
-        [
-            {"Metric": "Sales", "Period": a_lbl, "Value": float(kA["Sales"])},
-            {"Metric": "Sales", "Period": b_lbl, "Value": float(kB["Sales"])},
-            {"Metric": "Units", "Period": a_lbl, "Value": float(kA["Units"])},
-            {"Metric": "Units", "Period": b_lbl, "Value": float(kB["Units"])},
-            {"Metric": "ASP", "Period": a_lbl, "Value": float(kA["ASP"])},
-            {"Metric": "ASP", "Period": b_lbl, "Value": float(kB["ASP"])},
-        ]
-    )
+    sales_col, units_col = st.columns(2)
 
-    overview_chart = (
-        alt.Chart(overview)
-        .mark_bar(cornerRadiusTopLeft=4, cornerRadiusTopRight=4)
-        .encode(
-            x=alt.X("Metric:N", title=""),
-            y=alt.Y("Value:Q", title="Value"),
-            xOffset=alt.XOffset("Period:N"),
-            tooltip=[
-                alt.Tooltip("Metric:N", title="Metric"),
-                alt.Tooltip("Period:N", title="Period"),
-                alt.Tooltip("Value:Q", title="Value", format=",.2f"),
-            ],
+    with sales_col:
+        st.markdown("#### Sales")
+        sales_chart = metric_bar_chart(
+            metric_name="Sales",
+            cur_val=float(kA["Sales"]),
+            cmp_val=float(kB["Sales"]),
+            value_format=",.2f",
+            height=320,
         )
-        .properties(height=320)
-    )
-    st.altair_chart(overview_chart, use_container_width=True)
+        st.altair_chart(sales_chart, use_container_width=True)
 
-    retailer = prep_compare(dfA, dfB, "Retailer", top_n=10)
-    vendor = prep_compare(dfA, dfB, "Vendor", top_n=10)
+    with units_col:
+        st.markdown("#### Units")
+        units_chart = metric_bar_chart(
+            metric_name="Units",
+            cur_val=float(kA["Units"]),
+            cmp_val=float(kB["Units"]),
+            value_format=",.0f",
+            height=320,
+        )
+        st.altair_chart(units_chart, use_container_width=True)
+
+    retailer = prep_compare_metric(dfA, dfB, "Retailer", metric="Sales", top_n=10)
+    vendor = prep_compare_metric(dfA, dfB, "Vendor", metric="Sales", top_n=10)
 
     left, right = st.columns(2)
 
     with left:
         st.markdown("#### Top Retailers")
-        retailer_long = melt_compare(retailer, "Retailer")
+        retailer_long = prep_stack_percent(retailer, "Retailer")
         if retailer_long.empty:
             st.caption("No retailer data available.")
         else:
-            retailer_chart = (
-                alt.Chart(retailer_long)
-                .mark_bar()
-                .encode(
-                    y=alt.Y("Retailer:N", sort="-x", title=""),
-                    x=alt.X("Sales:Q", title="Sales"),
-                    color=alt.Color("Series:N", title=""),
-                    tooltip=[
-                        alt.Tooltip("Retailer:N", title="Retailer"),
-                        alt.Tooltip("Series:N", title="Series"),
-                        alt.Tooltip("Sales:Q", title="Sales", format=",.2f"),
-                    ],
-                )
-                .properties(height=360)
-            )
+            retailer_chart = stacked_share_chart(retailer_long, "Retailer", title="")
             st.altair_chart(retailer_chart, use_container_width=True)
 
     with right:
         st.markdown("#### Top Vendors")
-        vendor_long = melt_compare(vendor, "Vendor")
+        vendor_long = prep_stack_percent(vendor, "Vendor")
         if vendor_long.empty:
             st.caption("No vendor data available.")
         else:
-            vendor_chart = (
-                alt.Chart(vendor_long)
-                .mark_bar()
-                .encode(
-                    y=alt.Y("Vendor:N", sort="-x", title=""),
-                    x=alt.X("Sales:Q", title="Sales"),
-                    color=alt.Color("Series:N", title=""),
-                    tooltip=[
-                        alt.Tooltip("Vendor:N", title="Vendor"),
-                        alt.Tooltip("Series:N", title="Series"),
-                        alt.Tooltip("Sales:Q", title="Sales", format=",.2f"),
-                    ],
-                )
-                .properties(height=360)
-            )
+            vendor_chart = stacked_share_chart(vendor_long, "Vendor", title="")
             st.altair_chart(vendor_chart, use_container_width=True)
 
     st.write("")
@@ -270,7 +318,7 @@ def render_visual_executive_dashboard(
 
     st.write("")
 
-    driver_r = prep_compare(dfA, dfB, "Retailer", top_n=12).sort_values("Delta", ascending=False)
+    driver_r = prep_compare_metric(dfA, dfB, "Retailer", metric="Sales", top_n=12).sort_values("Delta", ascending=False)
     if not driver_r.empty:
         st.markdown("#### Retailer Contribution to Change")
         contrib_chart = (
