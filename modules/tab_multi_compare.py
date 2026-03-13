@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 import math
+
+import altair as alt
+import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 import streamlit as st
@@ -591,10 +594,21 @@ def _render_multi_year_seasonality(
         return
 
     d = df_sel.copy()
-    d["WeekEnd"] = pd.to_datetime(d["WeekEnd"], errors="coerce")
-    d = d[d["WeekEnd"].notna()].copy()
-    d["Year"] = d["WeekEnd"].dt.year.astype(str)
-    d["Quarter"] = d["WeekEnd"].dt.quarter.map(lambda q: f"Q{int(q)}")
+    date_col = "WeekEnd" if "WeekEnd" in d.columns else None
+    if date_col is None:
+        for c in ["Date", "Week", "Week End", "Week_End", "Week Ending", "WeekEnding"]:
+            if c in d.columns:
+                date_col = c
+                break
+
+    if date_col is None:
+        st.info("No date column available for seasonality.")
+        return
+
+    d[date_col] = pd.to_datetime(d[date_col], errors="coerce")
+    d = d[d[date_col].notna()].copy()
+    d["Year"] = d[date_col].dt.year.astype(str)
+    d["Quarter"] = d[date_col].dt.quarter.map(lambda q: f"Q{int(q)}")
 
     q = d.groupby(["Quarter", "Year"], as_index=False).agg(Value=(metric, "sum"))
 
@@ -700,6 +714,390 @@ def _render_performance_score(
     out["Total"] = out["Total"].map(lambda v: _fmt_value(v, metric))
 
     render_df(out, height=500)
+
+
+# -------------------------
+# Visual analytics helpers
+# -------------------------
+
+RADAR_MONTH_ORDER = [
+    ("Q1", "March", 3),
+    ("Q1", "February", 2),
+    ("Q1", "January", 1),
+    ("Q2", "June", 6),
+    ("Q2", "May", 5),
+    ("Q2", "April", 4),
+    ("Q3", "September", 9),
+    ("Q3", "August", 8),
+    ("Q3", "July", 7),
+    ("Q4", "December", 12),
+    ("Q4", "November", 11),
+    ("Q4", "October", 10),
+]
+
+
+def _find_date_column(df: pd.DataFrame) -> str | None:
+    if df is None or df.empty:
+        return None
+    for c in ["WeekEnd", "Date", "Week", "Week End", "Week_End", "Week Ending", "WeekEnding"]:
+        if c in df.columns:
+            return c
+    return None
+
+
+def _prepare_visual_base(df_scope: pd.DataFrame, labels: list[str], granularity: str) -> pd.DataFrame:
+    out = []
+    for lbl in labels:
+        part = filter_by_period_labels(df_scope, [lbl], granularity).copy()
+        if part.empty:
+            continue
+        part["PeriodLabel"] = str(lbl)
+        out.append(part)
+
+    if not out:
+        return pd.DataFrame()
+
+    df = pd.concat(out, ignore_index=True)
+    date_col = _find_date_column(df)
+    if date_col:
+        df[date_col] = pd.to_datetime(df[date_col], errors="coerce")
+        df["MonthNum"] = df[date_col].dt.month
+        df["QuarterNum"] = df[date_col].dt.quarter
+        df["Quarter"] = df["QuarterNum"].map(lambda q: f"Q{int(q)}" if pd.notna(q) else None)
+    else:
+        if "Quarter" not in df.columns:
+            df["Quarter"] = None
+        if "MonthNum" not in df.columns:
+            df["MonthNum"] = np.nan
+
+    return df
+
+
+def _pie_chart_df(df: pd.DataFrame, metric: str) -> pd.DataFrame:
+    if df.empty or metric not in df.columns:
+        return pd.DataFrame(columns=["PeriodLabel", "Value", "Pct", "Label"])
+    out = df.groupby("PeriodLabel", as_index=False)[metric].sum().rename(columns={metric: "Value"})
+    total = float(out["Value"].sum()) if not out.empty else 0.0
+    out["Pct"] = np.where(total > 0, out["Value"] / total, 0.0)
+    out["Label"] = out.apply(
+        lambda r: f"{r['PeriodLabel']} • {_fmt_value(float(r['Value']), metric)} • {float(r['Pct']):.1%}",
+        axis=1,
+    )
+    return out.sort_values("PeriodLabel").reset_index(drop=True)
+
+
+def _render_pie_chart(df: pd.DataFrame, metric: str, title: str):
+    if df.empty:
+        st.info(f"No {metric.lower()} pie data available.")
+        return
+
+    chart = (
+        alt.Chart(df)
+        .mark_arc(outerRadius=145)
+        .encode(
+            theta=alt.Theta("Value:Q"),
+            color=alt.Color("PeriodLabel:N", title=""),
+            tooltip=[
+                alt.Tooltip("PeriodLabel:N", title="Year"),
+                alt.Tooltip("Value:Q", title=metric, format=",.2f" if metric == "Sales" else ",.0f"),
+                alt.Tooltip("Pct:Q", title="% of total", format=".1%"),
+            ],
+        )
+        .properties(title=title, height=360)
+    )
+
+    labels = (
+        alt.Chart(df)
+        .mark_text(radius=185, size=11)
+        .encode(
+            theta=alt.Theta("Value:Q"),
+            text="PeriodLabel:N",
+        )
+    )
+
+    st.altair_chart(chart + labels, use_container_width=True)
+
+    tbl = df.copy()
+    tbl["Value"] = tbl["Value"].map(lambda v: _fmt_value(float(v), metric))
+    tbl["Pct"] = tbl["Pct"].map(lambda v: f"{float(v):.1%}")
+    st.dataframe(tbl[["PeriodLabel", "Value", "Pct"]], use_container_width=True, hide_index=True)
+
+
+def _quarterly_stacked_df(df: pd.DataFrame, metric: str) -> pd.DataFrame:
+    if df.empty or metric not in df.columns or "Quarter" not in df.columns:
+        return pd.DataFrame(columns=["PeriodLabel", "Quarter", "Value", "Label"])
+    out = (
+        df.dropna(subset=["Quarter"])
+        .groupby(["PeriodLabel", "Quarter"], as_index=False)[metric]
+        .sum()
+        .rename(columns={metric: "Value"})
+    )
+    q_order = ["Q1", "Q2", "Q3", "Q4"]
+    out["Quarter"] = pd.Categorical(out["Quarter"], categories=q_order, ordered=True)
+    out = out.sort_values(["PeriodLabel", "Quarter"]).copy()
+    out["Label"] = out["Value"].map(lambda v: _fmt_value(float(v), metric))
+    return out
+
+
+def _render_quarterly_stacked(df: pd.DataFrame, metric: str):
+    if df.empty:
+        st.info("No quarterly stacked data available.")
+        return
+
+    bars = (
+        alt.Chart(df)
+        .mark_bar()
+        .encode(
+            x=alt.X("PeriodLabel:N", title="Year"),
+            y=alt.Y("Value:Q", title=metric),
+            color=alt.Color("Quarter:N", title="", sort=["Q1", "Q2", "Q3", "Q4"]),
+            order=alt.Order("Quarter:N", sort="ascending"),
+            tooltip=[
+                alt.Tooltip("PeriodLabel:N", title="Year"),
+                alt.Tooltip("Quarter:N", title="Quarter"),
+                alt.Tooltip("Value:Q", title=metric, format=",.2f" if metric == "Sales" else ",.0f"),
+            ],
+        )
+        .properties(height=420, title=f"{metric} by Quarter, stacked within each selected year")
+    )
+
+    text = (
+        alt.Chart(df[df["Value"] > 0])
+        .mark_text(size=10, color="black")
+        .encode(
+            x=alt.X("PeriodLabel:N"),
+            y=alt.Y("Value:Q", stack="zero"),
+            detail="Quarter:N",
+            order=alt.Order("Quarter:N", sort="ascending"),
+            text="Label:N",
+        )
+    )
+
+    st.altair_chart(bars + text, use_container_width=True)
+
+
+def _top2_per_year(df: pd.DataFrame, dim: str, metric: str = "Sales") -> pd.DataFrame:
+    if df.empty or dim not in df.columns or metric not in df.columns:
+        return pd.DataFrame(columns=["PeriodLabel", "Entity", "Value", "Rank", "YLabel"])
+    grp = (
+        df.groupby(["PeriodLabel", dim], as_index=False)[metric]
+        .sum()
+        .rename(columns={dim: "Entity", metric: "Value"})
+    )
+    grp["Rank"] = grp.groupby("PeriodLabel")["Value"].rank(method="first", ascending=False)
+    out = grp[grp["Rank"] <= 2].copy()
+    out["Rank"] = out["Rank"].astype(int)
+    out = out.sort_values(["PeriodLabel", "Rank", "Value"], ascending=[True, True, False]).reset_index(drop=True)
+    out["YLabel"] = out["PeriodLabel"].astype(str) + " • #" + out["Rank"].astype(str) + " • " + out["Entity"].astype(str)
+    out["ValueLabel"] = out["Value"].map(money)
+    return out
+
+
+def _render_lollipop(df: pd.DataFrame, title: str):
+    if df.empty:
+        st.info(f"No data available for {title.lower()}.")
+        return
+
+    xmax = float(df["Value"].max()) if not df.empty else 0.0
+    xmax = xmax * 1.20 if xmax > 0 else 1.0
+    df = df.copy()
+    df["Zero"] = 0.0
+
+    rules = (
+        alt.Chart(df)
+        .mark_rule(strokeWidth=2.5)
+        .encode(
+            y=alt.Y("YLabel:N", sort=None, title=""),
+            x=alt.X("Zero:Q", scale=alt.Scale(domain=[0, xmax]), title="Sales"),
+            x2="Value:Q",
+            color=alt.Color("PeriodLabel:N", title=""),
+            tooltip=[
+                alt.Tooltip("PeriodLabel:N", title="Year"),
+                alt.Tooltip("Entity:N", title="Name"),
+                alt.Tooltip("Rank:O", title="Rank"),
+                alt.Tooltip("Value:Q", title="Sales", format=",.2f"),
+            ],
+        )
+    )
+
+    dots = (
+        alt.Chart(df)
+        .mark_circle(size=140)
+        .encode(
+            y=alt.Y("YLabel:N", sort=None, title=""),
+            x=alt.X("Value:Q", scale=alt.Scale(domain=[0, xmax]), title="Sales"),
+            color=alt.Color("PeriodLabel:N", title=""),
+        )
+    )
+
+    text = (
+        alt.Chart(df)
+        .mark_text(align="left", dx=8, size=11)
+        .encode(
+            y=alt.Y("YLabel:N", sort=None, title=""),
+            x=alt.X("Value:Q", scale=alt.Scale(domain=[0, xmax]), title="Sales"),
+            text="ValueLabel:N",
+            color=alt.Color("PeriodLabel:N", legend=None),
+        )
+    )
+
+    st.altair_chart((rules + dots + text).properties(height=max(260, len(df) * 34), title=title), use_container_width=True)
+
+
+def _all_years_radar_month_df(df_hist: pd.DataFrame) -> pd.DataFrame:
+    if df_hist is None or df_hist.empty or "Sales" not in df_hist.columns:
+        return pd.DataFrame()
+
+    work = df_hist.copy()
+
+    if "MonthNum" not in work.columns:
+        date_col = _find_date_column(work)
+        if date_col is None:
+            return pd.DataFrame()
+        work[date_col] = pd.to_datetime(work[date_col], errors="coerce")
+        work = work.dropna(subset=[date_col]).copy()
+        work["MonthNum"] = work[date_col].dt.month
+
+    work = work.dropna(subset=["MonthNum"]).copy()
+    work["MonthNum"] = work["MonthNum"].astype(int)
+
+    out = (
+        work.groupby("MonthNum", as_index=False)["Sales"]
+        .sum()
+        .rename(columns={"Sales": "TotalSales"})
+    )
+
+    order_df = pd.DataFrame(RADAR_MONTH_ORDER, columns=["Quarter", "Month", "MonthNum"])
+    out = order_df.merge(out, on="MonthNum", how="left").fillna({"TotalSales": 0.0})
+    max_sales = float(out["TotalSales"].max()) if not out.empty else 0.0
+    out["ScaledSales"] = out["TotalSales"] / max_sales if max_sales > 0 else 0.0
+    out["Label"] = out["Quarter"] + " • " + out["Month"]
+    out["Rank"] = out["TotalSales"].rank(method="dense", ascending=False).astype(int)
+    return out
+
+
+def _render_radar(df: pd.DataFrame):
+    if df.empty:
+        st.info("Not enough data to build the radar chart.")
+        return
+
+    labels = df["Label"].tolist()
+    values = df["ScaledSales"].tolist()
+
+    angles = [n / float(len(labels)) * 2 * math.pi for n in range(len(labels))]
+    angles += angles[:1]
+    values += values[:1]
+
+    fig = plt.figure(figsize=(8.5, 8.5))
+    ax = plt.subplot(111, polar=True)
+    ax.set_theta_offset(math.pi / 2)
+    ax.set_theta_direction(-1)
+
+    plt.xticks(angles[:-1], labels, fontsize=9)
+    ax.set_rlabel_position(0)
+    ax.set_yticks([0.25, 0.50, 0.75, 1.00])
+    ax.set_yticklabels(["25%", "50%", "75%", "100%"], fontsize=8)
+    ax.set_ylim(0, 1.0)
+
+    ax.plot(angles, values, linewidth=2)
+    ax.fill(angles, values, alpha=0.20)
+    ax.set_title("All-Years Sales Seasonality Radar", pad=24, fontsize=14)
+
+    st.pyplot(fig, use_container_width=True)
+    plt.close(fig)
+
+
+def render_visual_only(ctx: dict):
+    st.subheader("Multi Month / Year Compare • Visual Analytics")
+    st.caption("Chart-first view for selected years or months.")
+
+    df_scope = ctx["df_scope"].copy()
+    df_hist_all = ctx.get("df_hist_for_new", pd.DataFrame()).copy()
+
+    if df_scope.empty:
+        st.info("No data available with the current filters.")
+        return
+
+    c1, c2, c3 = st.columns([1.2, 2.4, 1.0])
+
+    with c1:
+        granularity = st.selectbox(
+            "Analyze By",
+            ["Year", "Month"],
+            index=0,
+            key="multi_compare_visual_granularity",
+        )
+
+    options = available_year_labels(df_scope) if granularity == "Year" else available_month_labels(df_scope)
+    default_sel = options[-4:] if len(options) >= 4 else options
+
+    with c2:
+        labels = st.multiselect(
+            f"Select {granularity}s",
+            options=options,
+            default=default_sel,
+            key="multi_compare_visual_labels",
+        )
+
+    with c3:
+        show_radar = st.selectbox(
+            "Radar Source",
+            ["All Filtered History"],
+            index=0,
+            key="multi_compare_visual_radar_source",
+        )
+
+    if not labels:
+        st.info(f"Select one or more {granularity.lower()}s to continue.")
+        return
+
+    ordered_labels = [x for x in options if x in labels]
+    df_vis = _prepare_visual_base(df_scope, ordered_labels, granularity)
+
+    if df_vis.empty:
+        st.info("No data available for the selected visual periods.")
+        return
+
+    st.markdown("### Year Share")
+    c_sales, c_units = st.columns(2)
+    with c_sales:
+        _render_pie_chart(_pie_chart_df(df_vis, "Sales"), "Sales", "Total Sales by Selected Year/Period")
+    with c_units:
+        _render_pie_chart(_pie_chart_df(df_vis, "Units"), "Units", "Total Units by Selected Year/Period")
+
+    st.markdown("### Quarterly Stacked Bars")
+    q_sales, q_units = st.columns(2)
+    with q_sales:
+        _render_quarterly_stacked(_quarterly_stacked_df(df_vis, "Sales"), "Sales")
+    with q_units:
+        _render_quarterly_stacked(_quarterly_stacked_df(df_vis, "Units"), "Units")
+
+    st.markdown("### Biggest 2 by Year")
+    l1, l2, l3 = st.columns(3)
+    with l1:
+        _render_lollipop(_top2_per_year(df_vis, "Retailer", "Sales"), "Biggest 2 Retailers by Selected Year/Period")
+    with l2:
+        _render_lollipop(_top2_per_year(df_vis, "Vendor", "Sales"), "Biggest 2 Vendors by Selected Year/Period")
+    with l3:
+        _render_lollipop(_top2_per_year(df_vis, "SKU", "Sales"), "Biggest 2 SKUs by Selected Year/Period")
+
+    st.markdown("### All-Years Seasonality Radar")
+    st.caption("Uses all filtered history in the app across all years for the current scope filter.")
+
+    radar_df = _all_years_radar_month_df(df_hist_all)
+    r1, r2 = st.columns([1.6, 1.0])
+
+    with r1:
+        _render_radar(radar_df)
+
+    with r2:
+        if radar_df.empty:
+            st.info("No radar data available.")
+        else:
+            tbl = radar_df[["Quarter", "Month", "TotalSales", "Rank"]].copy()
+            tbl = tbl.sort_values(["Rank", "Quarter", "Month"]).reset_index(drop=True)
+            tbl["TotalSales"] = tbl["TotalSales"].map(money)
+            st.dataframe(tbl, use_container_width=True, hide_index=True)
 
 
 def render(ctx: dict):
