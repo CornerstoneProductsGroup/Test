@@ -85,6 +85,9 @@ def render_visual_executive_dashboard(
     b_lbl: str,
     min_sales: float,
 ):
+    SERIES_COLORS = [a_lbl, b_lbl]
+    SERIES_RANGE = ["#1f77b4", "#ff7f0e"]
+
     def pct_change(cur: float, prev: float):
         if prev == 0:
             return np.nan if cur == 0 else np.inf
@@ -182,8 +185,15 @@ def render_visual_executive_dashboard(
 
         color_enc = alt.Color(
             "Series:N",
+            scale=alt.Scale(domain=SERIES_COLORS, range=SERIES_RANGE),
             title="",
             legend=alt.Legend(orient="bottom", direction="horizontal"),
+        )
+
+        text_color_enc = alt.Color(
+            "Series:N",
+            scale=alt.Scale(domain=SERIES_COLORS, range=SERIES_RANGE),
+            legend=None,
         )
 
         y_enc = alt.Y(
@@ -199,24 +209,26 @@ def render_visual_executive_dashboard(
             scale=alt.Scale(paddingInner=0.28),
         )
 
-        base = alt.Chart(long_df).encode(
-            y=y_enc,
-            yOffset=yoff_enc,
-            x=alt.X(
-                "Value:Q",
-                title="Sales",
-                scale=alt.Scale(domain=[0, xmax], nice=True),
-            ),
-            color=color_enc,
-            tooltip=[
-                alt.Tooltip(f"{dim_name}:N", title=dim_name),
-                alt.Tooltip("Series:N", title="Series"),
-                alt.Tooltip("Value:Q", title="Sales", format=",.2f"),
-                alt.Tooltip("SharePct:Q", title="% of row total", format=".0%"),
-            ],
+        bars = (
+            alt.Chart(long_df)
+            .mark_bar(size=11)
+            .encode(
+                y=y_enc,
+                yOffset=yoff_enc,
+                x=alt.X(
+                    "Value:Q",
+                    title="Sales",
+                    scale=alt.Scale(domain=[0, xmax], nice=True),
+                ),
+                color=color_enc,
+                tooltip=[
+                    alt.Tooltip(f"{dim_name}:N", title=dim_name),
+                    alt.Tooltip("Series:N", title="Series"),
+                    alt.Tooltip("Value:Q", title="Sales", format=",.2f"),
+                    alt.Tooltip("SharePct:Q", title="% of row total", format=".0%"),
+                ],
+            )
         )
-
-        bars = base.mark_bar(size=11)
 
         labels = (
             alt.Chart(long_df)
@@ -224,13 +236,17 @@ def render_visual_executive_dashboard(
                 align="left",
                 dx=6,
                 baseline="middle",
+                fontSize=11,
             )
             .encode(
                 y=y_enc,
                 yOffset=yoff_enc,
-                x=alt.X("Value:Q", scale=alt.Scale(domain=[0, xmax], nice=True)),
+                x=alt.X(
+                    "Value:Q",
+                    scale=alt.Scale(domain=[0, xmax], nice=True),
+                ),
                 text="BarLabel:N",
-                color=color_enc,
+                color=text_color_enc,
             )
         )
 
