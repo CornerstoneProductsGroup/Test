@@ -31,20 +31,6 @@ def render(ctx: dict):
         .kpi-card .top-two-item .kpi-value{font-size:30px !important;}
         .kpi-card .top-two-item .kpi-delta{font-size:14px !important;}
         .kpi-card .top-two-item .kpi-sub{font-size:14px !important;}
-
-        .compare-chart-card{
-            border:1px solid rgba(120,120,120,0.28);
-            border-radius:16px;
-            padding:14px 14px 8px 14px;
-            margin:0 0 14px 0;
-            background:rgba(255,255,255,0.02);
-            box-shadow:0 1px 2px rgba(0,0,0,0.04);
-        }
-        .compare-chart-card h4,
-        .compare-chart-card h3{
-            margin-top:0.1rem !important;
-            margin-bottom:0.6rem !important;
-        }
         </style>
         """,
         unsafe_allow_html=True,
@@ -101,15 +87,12 @@ def render_visual_executive_dashboard(
 ):
     PERIOD_DOMAIN = [a_lbl, b_lbl]
     PERIOD_RANGE = ["#1f77b4", "#ff7f0e"]
+
+    Q_DOMAIN = ["Q1", "Q2", "Q3", "Q4"]
+    Q_RANGE = ["#dbe7f5", "#a8c4e5", "#6f9fd1", "#2f6fb3"]
+
     POSITIVE_BAR = "#2e7d32"
     NEGATIVE_BAR = "#c62828"
-
-    def open_chart_card(title: str):
-        st.markdown('<div class="compare-chart-card">', unsafe_allow_html=True)
-        st.markdown(f"#### {title}")
-
-    def close_chart_card():
-        st.markdown("</div>", unsafe_allow_html=True)
 
     def pct_change(cur: float, prev: float):
         if prev == 0:
@@ -142,46 +125,174 @@ def render_visual_executive_dashboard(
         out = out.sort_values(["Total", level], ascending=[False, True]).head(top_n).copy()
         return out
 
-    def metric_bar_chart(metric_name: str, cur_val: float, cmp_val: float, value_format: str, height: int = 320):
-        chart_df = pd.DataFrame(
-            [
-                {"Period": a_lbl, "Value": float(cur_val)},
-                {"Period": b_lbl, "Value": float(cmp_val)},
-            ]
-        )
+    def infer_quarter_series(df: pd.DataFrame) -> pd.Series | None:
+        cols = {str(c).strip().lower(): c for c in df.columns}
 
-        ymax = float(chart_df["Value"].max()) if not chart_df.empty else 0.0
-        ymax = ymax * 1.18 if ymax > 0 else 1.0
+        for cand in ["quarter", "qtr", "fiscal quarter"]:
+            if cand in cols:
+                s = df[cols[cand]].astype(str).str.upper().str.replace(" ", "", regex=False)
+                s = s.replace({"1": "Q1", "2": "Q2", "3": "Q3", "4": "Q4"})
+                return s.where(s.isin(Q_DOMAIN))
 
-        color_enc = alt.Color(
-            "Period:N",
-            scale=alt.Scale(domain=PERIOD_DOMAIN, range=PERIOD_RANGE),
-            legend=None,
-        )
+        month_num = None
+
+        for cand in ["monthnum", "month_num", "month number", "month"]:
+            if cand in cols:
+                raw = df[cols[cand]]
+                if pd.api.types.is_numeric_dtype(raw):
+                    month_num = pd.to_numeric(raw, errors="coerce")
+                    break
+                month_map = {
+                    "jan": 1, "january": 1,
+                    "feb": 2, "february": 2,
+                    "mar": 3, "march": 3,
+                    "apr": 4, "april": 4,
+                    "may": 5,
+                    "jun": 6, "june": 6,
+                    "jul": 7, "july": 7,
+                    "aug": 8, "august": 8,
+                    "sep": 9, "sept": 9, "september": 9,
+                    "oct": 10, "october": 10,
+                    "nov": 11, "november": 11,
+                    "dec": 12, "december": 12,
+                }
+                tmp = raw.astype(str).str.strip().str.lower().map(month_map)
+                if tmp.notna().any():
+                    month_num = pd.to_numeric(tmp, errors="coerce")
+                    break
+
+        if month_num is None:
+            for cand in [
+                "date", "week ending", "week_end", "week end date",
+                "week ending date", "invoice date", "ship date"
+            ]:
+                if cand in cols:
+                    dt = pd.to_datetime(df[cols[cand]], errors="coerce")
+                    if dt.notna().any():
+                        month_num = dt.dt.month
+                        break
+
+        if month_num is None:
+            return None
+
+        q = (((month_num - 1) // 3) + 1).map({1: "Q1", 2: "Q2", 3: "Q3", 4: "Q4"})
+        return q
+
+    def prep_quarter_stacked(df_cur: pd.DataFrame, df_cmp: pd.DataFrame, metric: str):
+        cur_q = infer_quarter_series(df_cur)
+        cmp_q = infer_quarter_series(df_cmp)
+
+        if cur_q is None or cmp_q is None:
+            return pd.DataFrame()
+
+        cur = df_cur.copy()
+        cmp = df_cmp.copy()
+        cur["_Quarter_"] = cur_q
+        cmp["_Quarter_"] = cmp_q
+
+        cur = cur[cur["_Quarter_"].isin(Q_DOMAIN)]
+        cmp = cmp[cmp["_Quarter_"].isin(Q_DOMAIN)]
+
+        a = cur.groupby("_Quarter_", as_index=False)[metric].sum()
+        b = cmp.groupby("_Quarter_", as_index=False)[metric].sum()
+
+        a["Period"] = a_lbl
+        b["Period"] = b_lbl
+        a.rename(columns={metric: "Value", "_Quarter_": "Quarter"}, inplace=True)
+        b.rename(columns={metric: "Value", "_Quarter_": "Quarter"}, inplace=True)
+
+        out = pd.concat([a, b], ignore_index=True)
+        if out.empty:
+            return out
+
+        out["Quarter"] = pd.Categorical(out["Quarter"], categories=Q_DOMAIN, ordered=True)
+        out = out.sort_values(["Period", "Quarter"]).copy()
+        out["Label"] = out["Value"].map(lambda v: f"{v:,.0f}" if metric == "Units" else money(v))
+        return out
+
+    def stacked_total_chart(metric_name: str, df_cur: pd.DataFrame, df_cmp: pd.DataFrame, fallback_cur: float, fallback_cmp: float):
+        metric = "Units" if metric_name == "Units" else "Sales"
+        stacked = prep_quarter_stacked(df_cur, df_cmp, metric)
+
+        if stacked.empty:
+            chart_df = pd.DataFrame(
+                [
+                    {"Period": a_lbl, "Value": float(fallback_cur)},
+                    {"Period": b_lbl, "Value": float(fallback_cmp)},
+                ]
+            )
+
+            xmax = float(chart_df["Value"].max()) if not chart_df.empty else 0.0
+            xmax = xmax * 1.20 if xmax > 0 else 1.0
+
+            color_enc = alt.Color(
+                "Period:N",
+                scale=alt.Scale(domain=PERIOD_DOMAIN, range=PERIOD_RANGE),
+                legend=None,
+            )
+
+            bars = (
+                alt.Chart(chart_df)
+                .mark_bar(cornerRadiusTopRight=5, cornerRadiusBottomRight=5)
+                .encode(
+                    y=alt.Y("Period:N", title="", sort=PERIOD_DOMAIN),
+                    x=alt.X("Value:Q", title=metric_name, scale=alt.Scale(domain=[0, xmax])),
+                    color=color_enc,
+                )
+                .properties(height=160)
+            )
+
+            labels = (
+                alt.Chart(chart_df)
+                .mark_text(dx=8, align="left", fontSize=14, fontWeight="bold")
+                .encode(
+                    y=alt.Y("Period:N", sort=PERIOD_DOMAIN),
+                    x=alt.X("Value:Q", scale=alt.Scale(domain=[0, xmax])),
+                    text=alt.Text("Value:Q", format=",.0f" if metric == "Units" else ",.2f"),
+                    color=color_enc,
+                )
+            )
+
+            return bars + labels
+
+        totals = stacked.groupby("Period", as_index=False)["Value"].sum().rename(columns={"Value": "Total"})
+        stacked = stacked.merge(totals, on="Period", how="left")
+        stacked["Quarter"] = pd.Categorical(stacked["Quarter"], categories=Q_DOMAIN, ordered=True)
+        stacked = stacked.sort_values(["Period", "Quarter"]).copy()
 
         bars = (
-            alt.Chart(chart_df)
-            .mark_bar(cornerRadiusTopLeft=4, cornerRadiusTopRight=4)
+            alt.Chart(stacked)
+            .mark_bar(cornerRadiusTopRight=5, cornerRadiusBottomRight=5)
             .encode(
-                x=alt.X("Period:N", title=""),
-                y=alt.Y("Value:Q", title=metric_name, scale=alt.Scale(domain=[0, ymax])),
-                color=color_enc,
+                y=alt.Y("Period:N", title="", sort=PERIOD_DOMAIN),
+                x=alt.X("Value:Q", title=metric_name),
+                color=alt.Color(
+                    "Quarter:N",
+                    scale=alt.Scale(domain=Q_DOMAIN, range=Q_RANGE),
+                    legend=alt.Legend(orient="top", direction="horizontal", title=""),
+                ),
+                order=alt.Order("Quarter:N", sort="ascending"),
                 tooltip=[
                     alt.Tooltip("Period:N", title="Period"),
-                    alt.Tooltip("Value:Q", title=metric_name, format=value_format),
+                    alt.Tooltip("Quarter:N", title="Quarter"),
+                    alt.Tooltip("Value:Q", title=metric_name, format=",.0f" if metric == "Units" else ",.2f"),
                 ],
             )
-            .properties(height=height)
+            .properties(height=165)
         )
 
+        text_df = stacked.copy()
+        text_df["ShowLabel"] = np.where(text_df["Value"] > 0, text_df["Label"], "")
+
         labels = (
-            alt.Chart(chart_df)
-            .mark_text(dy=-8, fontSize=14, fontWeight="bold")
+            alt.Chart(text_df[text_df["ShowLabel"] != ""])
+            .mark_text(fontSize=13, fontWeight="bold")
             .encode(
-                x=alt.X("Period:N"),
-                y=alt.Y("Value:Q"),
-                text=alt.Text("Value:Q", format=value_format),
-                color=color_enc,
+                y=alt.Y("Period:N", sort=PERIOD_DOMAIN),
+                x=alt.X("Value:Q", stack="center"),
+                detail="Quarter:N",
+                text="ShowLabel:N",
+                color=alt.value("#111111"),
             )
         )
 
@@ -189,7 +300,7 @@ def render_visual_executive_dashboard(
 
     def prep_grouped_share(df: pd.DataFrame, dim_name: str):
         if df.empty:
-            return pd.DataFrame(columns=[dim_name, "Series", "Value", "SharePct", "BarLabel", "SortTotal"])
+            return pd.DataFrame(columns=[dim_name, "Series", "Value", "SharePct", "Label", "SortTotal"])
 
         long_df = df[[dim_name, "Current", "Compare", "Total"]].melt(
             id_vars=[dim_name, "Total"],
@@ -200,19 +311,19 @@ def render_visual_executive_dashboard(
 
         long_df["Series"] = long_df["Series"].replace({"Current": a_lbl, "Compare": b_lbl})
         long_df["SharePct"] = np.where(long_df["Total"] > 0, long_df["Value"] / long_df["Total"], 0.0)
-        long_df["BarLabel"] = long_df.apply(
+        long_df["Label"] = long_df.apply(
             lambda r: f'{money(r["Value"])} • {r["SharePct"]:.0%}' if r["Value"] > 0 else "",
             axis=1,
         )
         long_df["SortTotal"] = long_df["Total"]
         return long_df
 
-    def grouped_share_chart(long_df: pd.DataFrame, dim_name: str, height: int = 500):
+    def grouped_lollipop_chart(long_df: pd.DataFrame, dim_name: str, height: int = 470):
         if long_df.empty:
             return None
 
         xmax = float(long_df["Value"].max()) if not long_df.empty else 0.0
-        xmax = xmax * 1.32 if xmax > 0 else 1.0
+        xmax = xmax * 1.34 if xmax > 0 else 1.0
 
         color_enc = alt.Color(
             "Series:N",
@@ -231,26 +342,34 @@ def render_visual_executive_dashboard(
             f"{dim_name}:N",
             sort=alt.SortField(field="SortTotal", order="descending"),
             title="",
-            scale=alt.Scale(paddingInner=0.36, paddingOuter=0.16),
+            scale=alt.Scale(paddingInner=0.38, paddingOuter=0.18),
         )
 
         yoff_enc = alt.YOffset(
             "Series:N",
             sort=[a_lbl, b_lbl],
-            scale=alt.Scale(paddingInner=0.28),
+            scale=alt.Scale(paddingInner=0.32),
         )
 
-        bars = (
+        rules = (
             alt.Chart(long_df)
-            .mark_bar(size=11)
+            .mark_rule(strokeWidth=2)
             .encode(
                 y=y_enc,
                 yOffset=yoff_enc,
-                x=alt.X(
-                    "Value:Q",
-                    title="Sales",
-                    scale=alt.Scale(domain=[0, xmax], nice=True),
-                ),
+                x=alt.value(0),
+                x2=alt.X2("Value:Q"),
+                color=color_enc,
+            )
+        )
+
+        dots = (
+            alt.Chart(long_df)
+            .mark_circle(size=120)
+            .encode(
+                y=y_enc,
+                yOffset=yoff_enc,
+                x=alt.X("Value:Q", title="Sales", scale=alt.Scale(domain=[0, xmax], nice=True)),
                 color=color_enc,
                 tooltip=[
                     alt.Tooltip(f"{dim_name}:N", title=dim_name),
@@ -262,27 +381,18 @@ def render_visual_executive_dashboard(
         )
 
         labels = (
-            alt.Chart(long_df)
-            .mark_text(
-                align="left",
-                dx=6,
-                baseline="middle",
-                fontSize=13,
-                fontWeight="bold",
-            )
+            alt.Chart(long_df[long_df["Label"] != ""])
+            .mark_text(align="left", dx=8, baseline="middle", fontSize=13, fontWeight="bold")
             .encode(
                 y=y_enc,
                 yOffset=yoff_enc,
-                x=alt.X(
-                    "Value:Q",
-                    scale=alt.Scale(domain=[0, xmax], nice=True),
-                ),
-                text="BarLabel:N",
+                x=alt.X("Value:Q", scale=alt.Scale(domain=[0, xmax], nice=True)),
+                text="Label:N",
                 color=text_color_enc,
             )
         )
 
-        return (bars + labels).properties(height=height)
+        return (rules + dots + labels).properties(height=height)
 
     def prep_sku_movers():
         sA = dfA.groupby("SKU", as_index=False).agg(Current=("Sales", "sum"))
@@ -295,7 +405,7 @@ def render_visual_executive_dashboard(
         dec = sku.sort_values(["Delta", "SKU"], ascending=[True, True]).head(10).copy()
         return inc, dec
 
-    def mover_chart(df: pd.DataFrame, metric_title: str, positive: bool, height: int = 360):
+    def mover_lollipop_chart(df: pd.DataFrame, metric_title: str, positive: bool, height: int = 360):
         if df.empty:
             return None
 
@@ -303,27 +413,37 @@ def render_visual_executive_dashboard(
         df["DeltaLabel"] = df["Delta"].map(money)
 
         xmax = float(df["Delta"].max()) if positive else float(df["Delta"].abs().max())
-        xmax = xmax * 1.30 if xmax > 0 else 1.0
+        xmax = xmax * 1.34 if xmax > 0 else 1.0
 
         if positive:
             order = alt.SortField(field="Delta", order="descending")
-            x_enc = alt.X("Delta:Q", title=metric_title, scale=alt.Scale(domain=[0, xmax], nice=True))
-            bar_color = POSITIVE_BAR
-            label_align = "left"
-            label_dx = 6
+            x_scale = alt.Scale(domain=[0, xmax], nice=True)
+            color = POSITIVE_BAR
+            align = "left"
+            dx = 8
         else:
             order = alt.SortField(field="Delta", order="ascending")
-            x_enc = alt.X("Delta:Q", title=metric_title, scale=alt.Scale(domain=[-xmax, 0], nice=True))
-            bar_color = NEGATIVE_BAR
-            label_align = "right"
-            label_dx = -6
+            x_scale = alt.Scale(domain=[-xmax, 0], nice=True)
+            color = NEGATIVE_BAR
+            align = "right"
+            dx = -8
 
-        bars = (
+        rules = (
             alt.Chart(df)
-            .mark_bar(color=bar_color)
+            .mark_rule(strokeWidth=2, color=color)
             .encode(
                 y=alt.Y("SKU:N", sort=order, title=""),
-                x=x_enc,
+                x=alt.value(0),
+                x2=alt.X2("Delta:Q"),
+            )
+        )
+
+        dots = (
+            alt.Chart(df)
+            .mark_circle(size=120, color=color)
+            .encode(
+                y=alt.Y("SKU:N", sort=order, title=""),
+                x=alt.X("Delta:Q", title=metric_title, scale=x_scale),
                 tooltip=[
                     alt.Tooltip("SKU:N", title="SKU"),
                     alt.Tooltip("Current:Q", title=a_lbl, format=",.2f"),
@@ -335,27 +455,21 @@ def render_visual_executive_dashboard(
 
         labels = (
             alt.Chart(df)
-            .mark_text(
-                align=label_align,
-                dx=label_dx,
-                color=bar_color,
-                fontSize=13,
-                fontWeight="bold",
-            )
+            .mark_text(align=align, dx=dx, color=color, fontSize=13, fontWeight="bold")
             .encode(
                 y=alt.Y("SKU:N", sort=order, title=""),
-                x=x_enc,
+                x=alt.X("Delta:Q", scale=x_scale),
                 text="DeltaLabel:N",
             )
         )
 
-        return (bars + labels).properties(height=height)
+        return (rules + dots + labels).properties(height=height)
 
     def prep_contrib(df: pd.DataFrame):
         if df.empty:
             return pd.DataFrame(columns=["Retailer", "Current", "Compare", "Delta", "ContribPct", "PctLabel", "DeltaLabel", "BarColor"])
 
-        out = df.copy()
+        out = df.copy().sort_values("Delta", ascending=False).copy()
         denom = float(out["Delta"].abs().sum())
         out["ContribPct"] = np.where(denom > 0, out["Delta"].abs() / denom, 0.0)
         out["PctLabel"] = (out["ContribPct"] * 100).round(0).astype(int).astype(str) + "%"
@@ -363,20 +477,31 @@ def render_visual_executive_dashboard(
         out["BarColor"] = np.where(out["Delta"] >= 0, POSITIVE_BAR, NEGATIVE_BAR)
         return out
 
-    def contrib_chart(df: pd.DataFrame, height: int = 470):
+    def contrib_lollipop_chart(df: pd.DataFrame, height: int = 470):
         if df.empty:
             return None
 
         xmax = float(df["Delta"].max()) if not df.empty else 0.0
         xmin = float(df["Delta"].min()) if not df.empty else 0.0
-        pad = max(abs(xmax), abs(xmin)) * 0.42 if max(abs(xmax), abs(xmin)) > 0 else 1.0
+        pad = max(abs(xmax), abs(xmin)) * 0.46 if max(abs(xmax), abs(xmin)) > 0 else 1.0
 
         x_scale = alt.Scale(domain=[xmin - pad, xmax + pad], nice=True)
         order = alt.SortField(field="Delta", order="descending")
 
-        bars = (
+        rules = (
             alt.Chart(df)
-            .mark_bar()
+            .mark_rule(strokeWidth=2)
+            .encode(
+                y=alt.Y("Retailer:N", sort=order, title=""),
+                x=alt.value(0),
+                x2=alt.X2("Delta:Q"),
+                color=alt.Color("BarColor:N", scale=None, legend=None),
+            )
+        )
+
+        dots = (
+            alt.Chart(df)
+            .mark_circle(size=120)
             .encode(
                 y=alt.Y("Retailer:N", sort=order, title=""),
                 x=alt.X("Delta:Q", title="Sales Delta", scale=x_scale),
@@ -396,7 +521,7 @@ def render_visual_executive_dashboard(
 
         pos_delta_labels = (
             alt.Chart(pos_df)
-            .mark_text(dx=6, align="left", fontSize=13, fontWeight="bold")
+            .mark_text(dx=8, align="left", fontSize=13, fontWeight="bold")
             .encode(
                 y=alt.Y("Retailer:N", sort=order, title=""),
                 x=alt.X("Delta:Q", scale=x_scale),
@@ -407,7 +532,7 @@ def render_visual_executive_dashboard(
 
         pos_pct_labels = (
             alt.Chart(pos_df)
-            .mark_text(dx=6, dy=14, align="left", fontSize=12, fontWeight="bold")
+            .mark_text(dx=8, dy=14, align="left", fontSize=12, fontWeight="bold")
             .encode(
                 y=alt.Y("Retailer:N", sort=order, title=""),
                 x=alt.X("Delta:Q", scale=x_scale),
@@ -418,7 +543,7 @@ def render_visual_executive_dashboard(
 
         neg_delta_labels = (
             alt.Chart(neg_df)
-            .mark_text(dx=-6, align="right", fontSize=13, fontWeight="bold")
+            .mark_text(dx=-8, align="right", fontSize=13, fontWeight="bold")
             .encode(
                 y=alt.Y("Retailer:N", sort=order, title=""),
                 x=alt.X("Delta:Q", scale=x_scale),
@@ -429,7 +554,7 @@ def render_visual_executive_dashboard(
 
         neg_pct_labels = (
             alt.Chart(neg_df)
-            .mark_text(dx=-6, dy=14, align="right", fontSize=12, fontWeight="bold")
+            .mark_text(dx=-8, dy=14, align="right", fontSize=12, fontWeight="bold")
             .encode(
                 y=alt.Y("Retailer:N", sort=order, title=""),
                 x=alt.X("Delta:Q", scale=x_scale),
@@ -438,7 +563,7 @@ def render_visual_executive_dashboard(
             )
         )
 
-        return (bars + pos_delta_labels + pos_pct_labels + neg_delta_labels + neg_pct_labels).properties(height=height)
+        return (rules + dots + pos_delta_labels + pos_pct_labels + neg_delta_labels + neg_pct_labels).properties(height=height)
 
     st.markdown("### Executive Dashboard")
 
@@ -455,39 +580,36 @@ def render_visual_executive_dashboard(
     sales_col, units_col = st.columns(2)
 
     with sales_col:
-        open_chart_card(f"Sales Totals ({a_lbl} vs {b_lbl})")
-        sales_chart = metric_bar_chart(
+        st.markdown(f"#### Sales Totals ({a_lbl} vs {b_lbl})")
+        sales_chart = stacked_total_chart(
             metric_name="Sales",
-            cur_val=float(kA["Sales"]),
-            cmp_val=float(kB["Sales"]),
-            value_format=",.2f",
-            height=320,
+            df_cur=dfA,
+            df_cmp=dfB,
+            fallback_cur=float(kA["Sales"]),
+            fallback_cmp=float(kB["Sales"]),
         )
         st.altair_chart(sales_chart, use_container_width=True)
-        close_chart_card()
 
     with units_col:
-        open_chart_card(f"Units Totals ({a_lbl} vs {b_lbl})")
-        units_chart = metric_bar_chart(
+        st.markdown(f"#### Units Totals ({a_lbl} vs {b_lbl})")
+        units_chart = stacked_total_chart(
             metric_name="Units",
-            cur_val=float(kA["Units"]),
-            cmp_val=float(kB["Units"]),
-            value_format=",.0f",
-            height=320,
+            df_cur=dfA,
+            df_cmp=dfB,
+            fallback_cur=float(kA["Units"]),
+            fallback_cmp=float(kB["Units"]),
         )
         st.altair_chart(units_chart, use_container_width=True)
-        close_chart_card()
 
     st.write("")
 
-    driver_r = prep_compare_metric(dfA, dfB, "Retailer", metric="Sales", top_n=12).sort_values("Delta", ascending=False)
+    driver_r = prep_compare_metric(dfA, dfB, "Retailer", metric="Sales", top_n=12)
     driver_r = prep_contrib(driver_r)
 
     if not driver_r.empty:
-        open_chart_card("Retailer Contribution to Change")
-        rc_chart = contrib_chart(driver_r, height=470)
+        st.markdown("#### Retailer Contribution to Change")
+        rc_chart = contrib_lollipop_chart(driver_r, height=470)
         st.altair_chart(rc_chart, use_container_width=True)
-        close_chart_card()
 
     retailer = prep_compare_metric(dfA, dfB, "Retailer", metric="Sales", top_n=10)
     vendor = prep_compare_metric(dfA, dfB, "Vendor", metric="Sales", top_n=10)
@@ -495,73 +617,44 @@ def render_visual_executive_dashboard(
     left, right = st.columns(2)
 
     with left:
-        open_chart_card("Top Retailers")
+        st.markdown("#### Top Retailers")
         retailer_long = prep_grouped_share(retailer, "Retailer")
         if retailer_long.empty:
             st.caption("No retailer data available.")
         else:
-            retailer_chart = grouped_share_chart(retailer_long, "Retailer")
+            retailer_chart = grouped_lollipop_chart(retailer_long, "Retailer", height=470)
             st.altair_chart(retailer_chart, use_container_width=True)
-        close_chart_card()
 
     with right:
-        open_chart_card("Top Vendors")
+        st.markdown("#### Top Vendors")
         vendor_long = prep_grouped_share(vendor, "Vendor")
         if vendor_long.empty:
             st.caption("No vendor data available.")
         else:
-            vendor_chart = grouped_share_chart(vendor_long, "Vendor")
+            vendor_chart = grouped_lollipop_chart(vendor_long, "Vendor", height=470)
             st.altair_chart(vendor_chart, use_container_width=True)
-        close_chart_card()
 
     st.write("")
 
     inc, dec = prep_sku_movers()
 
-    best_inc = inc.iloc[0] if not inc.empty else None
-    best_dec = dec.iloc[0] if not dec.empty else None
-
-    m1, m2 = st.columns(2)
-    with m1:
-        if best_inc is not None:
-            kpi_card(
-                "Biggest SKU Increase",
-                str(best_inc["SKU"]),
-                f'{money(float(best_inc["Delta"]))} vs {b_lbl}',
-            )
-        else:
-            kpi_card("Biggest SKU Increase", "None", "")
-    with m2:
-        if best_dec is not None:
-            kpi_card(
-                "Biggest SKU Decrease",
-                str(best_dec["SKU"]),
-                f'{money(float(best_dec["Delta"]))} vs {b_lbl}',
-            )
-        else:
-            kpi_card("Biggest SKU Decrease", "None", "")
-
-    st.write("")
-
     left2, right2 = st.columns(2)
 
     with left2:
-        open_chart_card("Top SKU Increases")
+        st.markdown("#### Top SKU Increases")
         if inc.empty:
             st.caption("No increasing SKUs found.")
         else:
-            inc_chart = mover_chart(inc, "Sales Change", positive=True, height=360)
+            inc_chart = mover_lollipop_chart(inc, "Sales Change", positive=True, height=360)
             st.altair_chart(inc_chart, use_container_width=True)
-        close_chart_card()
 
     with right2:
-        open_chart_card("Top SKU Decreases")
+        st.markdown("#### Top SKU Decreases")
         if dec.empty:
             st.caption("No declining SKUs found.")
         else:
-            dec_chart = mover_chart(dec, "Sales Change", positive=False, height=360)
+            dec_chart = mover_lollipop_chart(dec, "Sales Change", positive=False, height=360)
             st.altair_chart(dec_chart, use_container_width=True)
-        close_chart_card()
 
 
 def render_standard_view(
