@@ -1,703 +1,50 @@
 from __future__ import annotations
 
-from datetime import date
-import html as _html
-import re as _re
-
+import altair as alt
+import numpy as np
 import pandas as pd
 import streamlit as st
 
-from .app_core import read_weekly_workbook
 from .shared_core import (
-    APP_TITLE,
-    load_vendor_map,
-    load_store,
-    save_store,
-    enrich_sales,
-    available_month_labels,
-    available_year_labels,
-    filter_by_period_labels,
-    period_from_df,
-    compact_selection_label,
-    pick_period,
-    filter_by_period,
-    period_prev_same_length,
-    period_yoy,
-    ab_labels,
-    format_period_range,
-    calc_kpis,
-    drivers,
     money,
-    render_data_management_center,
+    pct_fmt,
+    rename_ab_columns,
+    render_df,
+    count_sales_card,
+    kpi_card,
+    selection_total_card,
+    top_two_card,
+    biggest_increase_card,
 )
-from .ui_styles import apply_global_styles
-from . import (
-    tab_standard_intelligence,
-    tab_month_year_compare,
-    tab_multi_compare,
-    tab_lookup_center,
-)
 
 
-def render_global_view_mode_toggle():
-    """
-    Global sidebar selector that controls whether the app shows:
-    - existing tab/module content
-    - visual analytics versions of those sections
-    """
-    default_mode = st.session_state.get("global_content_view", "Model View")
-
-    try:
-        selected = st.sidebar.segmented_control(
-            "Content View",
-            options=["Model View", "Visual Analytics"],
-            default=default_mode,
-            key="global_content_view",
-        )
-    except Exception:
-        selected = st.sidebar.radio(
-            "Content View",
-            options=["Model View", "Visual Analytics"],
-            index=0 if default_mode == "Model View" else 1,
-            key="global_content_view",
-        )
-
-    return selected or st.session_state.get("global_content_view", "Model View")
-
-
-def get_global_view_mode():
-    return st.session_state.get("global_content_view", "Model View")
-
-
-def _safe_grouped_table(df: pd.DataFrame, by: list[str], agg_cols: list[str]) -> pd.DataFrame:
-    if df is None or df.empty:
-        return pd.DataFrame()
-
-    use_by = [c for c in by if c in df.columns]
-    if not use_by:
-        return pd.DataFrame()
-
-    agg_map = {}
-    for c in agg_cols:
-        if c in df.columns:
-            agg_map[c] = "sum"
-
-    if not agg_map:
-        return pd.DataFrame()
-
-    out = (
-        df.groupby(use_by, dropna=False, as_index=False)
-        .agg(agg_map)
-        .copy()
-    )
-    return out
-
-
-def _find_date_col(df: pd.DataFrame) -> str | None:
-    if df is None or df.empty:
-        return None
-
-    candidates = [
-        "Week End",
-        "Week Ending",
-        "WeekEnding",
-        "Week_End",
-        "Date",
-        "Period End",
-        "PeriodEnd",
-        "End Date",
-        "Week",
-    ]
-    for c in candidates:
-        if c in df.columns:
-            return c
-    return None
-
-
-def _make_timeseries(df: pd.DataFrame) -> pd.DataFrame:
-    if df is None or df.empty:
-        return pd.DataFrame()
-
-    date_col = _find_date_col(df)
-    if not date_col:
-        return pd.DataFrame()
-
-    work = df.copy()
-    work[date_col] = pd.to_datetime(work[date_col], errors="coerce")
-    work = work.dropna(subset=[date_col])
-
-    agg = {}
-    if "Sales" in work.columns:
-        agg["Sales"] = "sum"
-    if "Units" in work.columns:
-        agg["Units"] = "sum"
-
-    if not agg:
-        return pd.DataFrame()
-
-    out = (
-        work.groupby(date_col, as_index=False)
-        .agg(agg)
-        .sort_values(date_col)
-        .rename(columns={date_col: "Period"})
-    )
-    return out
-
-
-def _top_table(df: pd.DataFrame, group_col: str, n: int = 10, sort_col: str = "Sales") -> pd.DataFrame:
-    if df is None or df.empty or group_col not in df.columns:
-        return pd.DataFrame()
-
-    agg = {}
-    if "Sales" in df.columns:
-        agg["Sales"] = "sum"
-    if "Units" in df.columns:
-        agg["Units"] = "sum"
-
-    if not agg:
-        return pd.DataFrame()
-
-    out = (
-        df.groupby(group_col, dropna=False, as_index=False)
-        .agg(agg)
-        .sort_values(sort_col if sort_col in agg else list(agg.keys())[0], ascending=False)
-        .head(n)
-        .copy()
-    )
-    return out
-
-
-def _render_kpi_strip(dfA: pd.DataFrame, dfB: pd.DataFrame | None = None, a_lbl: str | None = None, b_lbl: str | None = None):
-    kA = calc_kpis(dfA) if dfA is not None and not dfA.empty else {"Sales": 0.0, "Units": 0.0, "ASP": 0.0}
-    kB = calc_kpis(dfB) if dfB is not None and not dfB.empty else {"Sales": 0.0, "Units": 0.0, "ASP": 0.0}
-
-    sales_delta = kA.get("Sales", 0.0) - kB.get("Sales", 0.0)
-    units_delta = kA.get("Units", 0.0) - kB.get("Units", 0.0)
-    asp_delta = kA.get("ASP", 0.0) - kB.get("ASP", 0.0)
-
-    c1, c2, c3 = st.columns(3)
-    c1.metric(
-        f"Sales{f' ({a_lbl})' if a_lbl else ''}",
-        money(float(kA.get("Sales", 0.0))),
-        None if (dfB is None or dfB.empty or not b_lbl) else money(float(sales_delta)),
-    )
-    c2.metric(
-        f"Units{f' ({a_lbl})' if a_lbl else ''}",
-        f"{float(kA.get('Units', 0.0)):,.0f}",
-        None if (dfB is None or dfB.empty or not b_lbl) else f"{float(units_delta):,.0f}",
-    )
-    c3.metric(
-        f"ASP{f' ({a_lbl})' if a_lbl else ''}",
-        money(float(kA.get("ASP", 0.0))),
-        None if (dfB is None or dfB.empty or not b_lbl) else money(float(asp_delta)),
-    )
-
-
-def _render_timeseries_block(dfA: pd.DataFrame, title: str):
-    st.markdown(f"#### {title}")
-    ts = _make_timeseries(dfA)
-    if ts.empty:
-        st.info("No time-series column was found for this selection.")
-        return
-
-    if "Sales" in ts.columns:
-        st.markdown("**Sales Trend**")
-        st.line_chart(ts.set_index("Period")[["Sales"]], use_container_width=True)
-
-    if "Units" in ts.columns:
-        st.markdown("**Units Trend**")
-        st.line_chart(ts.set_index("Period")[["Units"]], use_container_width=True)
-
-
-def _render_top_tables(dfA: pd.DataFrame):
-    c1, c2 = st.columns(2)
-
-    with c1:
-        st.markdown("#### Top SKUs")
-        sku_tbl = _top_table(dfA, "SKU", n=12, sort_col="Sales")
-        if sku_tbl.empty:
-            st.info("No SKU data available.")
-        else:
-            st.dataframe(sku_tbl, use_container_width=True, hide_index=True)
-
-        st.markdown("#### Top Vendors")
-        ven_tbl = _top_table(dfA, "Vendor", n=12, sort_col="Sales")
-        if ven_tbl.empty:
-            st.info("No Vendor data available.")
-        else:
-            st.dataframe(ven_tbl, use_container_width=True, hide_index=True)
-
-    with c2:
-        st.markdown("#### Top Retailers")
-        ret_tbl = _top_table(dfA, "Retailer", n=12, sort_col="Sales")
-        if ret_tbl.empty:
-            st.info("No Retailer data available.")
-        else:
-            st.dataframe(ret_tbl, use_container_width=True, hide_index=True)
-
-        st.markdown("#### Sales Mix")
-        mix_tbl = _safe_grouped_table(dfA, ["Retailer"], ["Sales", "Units"])
-        if mix_tbl.empty:
-            st.info("No mix table available.")
-        else:
-            mix_tbl = mix_tbl.sort_values("Sales", ascending=False).head(15)
-            st.dataframe(mix_tbl, use_container_width=True, hide_index=True)
-
-
-def _render_driver_tables(dfA: pd.DataFrame, dfB: pd.DataFrame, driver_level: str):
-    st.markdown("#### Change Drivers")
-    drv = drivers(dfA, dfB, driver_level)
-    if drv is None or drv.empty:
-        st.info("No comparison drivers available for this selection.")
-        return
-
-    col_name = driver_level if driver_level in drv.columns else drv.columns[0]
-
-    pos = drv[drv["Sales_Δ"] > 0].sort_values("Sales_Δ", ascending=False).head(10).copy() if "Sales_Δ" in drv.columns else pd.DataFrame()
-    neg = drv[drv["Sales_Δ"] < 0].sort_values("Sales_Δ", ascending=True).head(10).copy() if "Sales_Δ" in drv.columns else pd.DataFrame()
-
-    c1, c2 = st.columns(2)
-
-    with c1:
-        st.markdown("**Top Increases**")
-        if pos.empty:
-            st.info("No positive drivers.")
-        else:
-            keep = [c for c in [col_name, "Sales_Δ", "Units_Δ", "ASP_Δ"] if c in pos.columns]
-            st.dataframe(pos[keep], use_container_width=True, hide_index=True)
-
-    with c2:
-        st.markdown("**Top Decreases**")
-        if neg.empty:
-            st.info("No negative drivers.")
-        else:
-            keep = [c for c in [col_name, "Sales_Δ", "Units_Δ", "ASP_Δ"] if c in neg.columns]
-            st.dataframe(neg[keep], use_container_width=True, hide_index=True)
-
-
-def _render_scope_breakdown(dfA: pd.DataFrame):
-    st.markdown("#### Breakdown Tables")
-    c1, c2, c3 = st.columns(3)
-
-    with c1:
-        tbl = _top_table(dfA, "Retailer", n=20)
-        st.markdown("**Retailer Breakdown**")
-        if tbl.empty:
-            st.info("No retailer breakdown available.")
-        else:
-            st.dataframe(tbl, use_container_width=True, hide_index=True)
-
-    with c2:
-        tbl = _top_table(dfA, "Vendor", n=20)
-        st.markdown("**Vendor Breakdown**")
-        if tbl.empty:
-            st.info("No vendor breakdown available.")
-        else:
-            st.dataframe(tbl, use_container_width=True, hide_index=True)
-
-    with c3:
-        tbl = _top_table(dfA, "SKU", n=20)
-        st.markdown("**SKU Breakdown**")
-        if tbl.empty:
-            st.info("No SKU breakdown available.")
-        else:
-            st.dataframe(tbl, use_container_width=True, hide_index=True)
-
-
-def render_standard_intelligence_visual(ctx: dict):
-    st.subheader("Standard Intelligence • Visual Analytics")
-    _render_kpi_strip(ctx["dfA"], ctx["dfB"], ctx.get("a_lbl"), ctx.get("b_lbl"))
-    st.divider()
-    _render_timeseries_block(ctx["dfA"], "Trend View")
-    st.divider()
-    _render_top_tables(ctx["dfA"])
-
-    if ctx.get("compare_mode") != "None" and ctx.get("dfB") is not None and not ctx["dfB"].empty:
-        st.divider()
-        _render_driver_tables(ctx["dfA"], ctx["dfB"], ctx.get("driver_level", "SKU"))
-
-
-def render_month_year_compare_visual(ctx: dict):
-    st.subheader("Month / Year Compare • Visual Analytics")
-    _render_kpi_strip(ctx["dfA"], ctx["dfB"], ctx.get("a_lbl"), ctx.get("b_lbl"))
-    st.divider()
-
-    c1, c2 = st.columns(2)
-    with c1:
-        st.markdown(f"#### Current • {ctx.get('a_lbl', 'Selection')}")
-        _render_timeseries_block(ctx["dfA"], "Current Selection Trend")
-
-    with c2:
-        st.markdown(f"#### Compare • {ctx.get('b_lbl', 'Selection')}")
-        if ctx["dfB"] is None or ctx["dfB"].empty:
-            st.info("No compare selection.")
-        else:
-            _render_timeseries_block(ctx["dfB"], "Compare Selection Trend")
-
-    st.divider()
-    _render_driver_tables(ctx["dfA"], ctx["dfB"], ctx.get("driver_level", "SKU"))
-    st.divider()
-    _render_scope_breakdown(ctx["dfA"])
-
-
-def render_multi_compare_visual(ctx: dict):
-    st.subheader("Multi Month / Year Compare • Visual Analytics")
-    st.info("Use the controls inside the existing multi-compare module for the detailed matrix logic. This visual layer gives you a quick dashboard view of the filtered dataset.")
-    _render_kpi_strip(ctx["dfA"], None, "Selected Scope", None)
-    st.divider()
-    _render_timeseries_block(ctx["dfA"], "Filtered Trend")
-    st.divider()
-    _render_scope_breakdown(ctx["dfA"])
-
-
-def render_lookup_center_visual(ctx: dict):
-    st.subheader("Lookup Center • Visual Analytics")
-    _render_kpi_strip(ctx["dfA"], None, ctx.get("a_lbl"), None)
-    st.divider()
-    _render_timeseries_block(ctx["dfA"], "Lookup Trend")
-    st.divider()
-    _render_top_tables(ctx["dfA"])
-    st.divider()
-    _render_scope_breakdown(ctx["dfA"])
-
-
-def render_current_analysis_view(ctx: dict):
-    analysis_view = ctx.get("analysis_view")
-
-    if analysis_view == "Standard Intelligence":
-        tab_standard_intelligence.render(ctx)
-    elif analysis_view == "Month / Year Compare":
-        tab_month_year_compare.render(ctx)
-    elif analysis_view == "Multi Month / Year Compare":
-        tab_multi_compare.render(ctx)
-    elif analysis_view == "Lookup Center":
-        tab_lookup_center.render(ctx)
-
-
-def render_visual_analysis_view(ctx: dict):
-    analysis_view = ctx.get("analysis_view")
-
-    if analysis_view == "Standard Intelligence":
-        render_standard_intelligence_visual(ctx)
-    elif analysis_view == "Month / Year Compare":
-        render_month_year_compare_visual(ctx)
-    elif analysis_view == "Multi Month / Year Compare":
-        render_multi_compare_visual(ctx)
-    elif analysis_view == "Lookup Center":
-        render_lookup_center_visual(ctx)
-
-
-def run_app():
-    st.set_page_config(page_title=APP_TITLE, layout="wide")
-    apply_global_styles()
-    st.title(APP_TITLE)
-
-    vm = load_vendor_map()
-    store = load_store()
-
-    with st.sidebar:
-        st.header("Data")
-        up = st.file_uploader("Upload weekly sales workbook (.xlsx)", type=["xlsx"])
-        year = st.number_input(
-            "Year hint (for filename parsing)",
-            min_value=2010,
-            max_value=2100,
-            value=date.today().year,
-            step=1,
-        )
-
-        if st.button("Ingest upload", disabled=(up is None)):
-            if up is not None:
-                raw = read_weekly_workbook(up, int(year))
-                _ = enrich_sales(raw, vm)
-                merged = pd.concat([store, raw], ignore_index=True)
-                save_store(merged)
-                st.success(f"Ingested {len(raw):,} rows from {getattr(up, 'name', 'upload.xlsx')}.")
-                store = load_store()
-
-        st.divider()
-        st.header("Filters")
-
-        scope = st.selectbox("Scope", ["All", "Retailer", "Vendor", "SKU"], index=0)
-
-        df_all = enrich_sales(store, vm)
-        scope_pick = None
-
-        if scope == "Retailer":
-            scope_pick = st.multiselect(
-                "Retailer(s)",
-                options=sorted(df_all["Retailer"].dropna().unique()) if "Retailer" in df_all.columns else [],
-                default=[],
-            )
-        elif scope == "Vendor":
-            scope_pick = st.multiselect(
-                "Vendor(s)",
-                options=sorted(df_all["Vendor"].dropna().unique()) if "Vendor" in df_all.columns else [],
-                default=[],
-            )
-        elif scope == "SKU":
-            scope_pick = st.multiselect(
-                "SKU(s)",
-                options=sorted(df_all["SKU"].dropna().unique()) if "SKU" in df_all.columns else [],
-                default=[],
-            )
-
-        analysis_view = st.radio(
-            "Analysis View",
-            [
-                "Standard Intelligence",
-                "Month / Year Compare",
-                "Multi Month / Year Compare",
-                "Lookup Center",
-                "Data Management Center",
-            ],
-            index=0,
-        )
-
-        content_view = render_global_view_mode_toggle()
-
-        multi_granularity = "Month"
-        current_labels_sel = []
-        compare_labels_sel = []
-
-        if analysis_view == "Data Management Center":
-            timeframe = "YTD"
-            compare_mode = "None"
-
-        elif analysis_view == "Standard Intelligence":
-            timeframe = st.selectbox(
-                "Timeframe",
-                [
-                    "Week (latest)",
-                    "Last 4 weeks",
-                    "Last 8 weeks",
-                    "Last 13 weeks",
-                    "Last 26 weeks",
-                    "Last 52 weeks",
-                    "YTD",
-                ],
-                index=2,
-            )
-            compare_mode = st.selectbox(
-                "Compare",
-                ["None", "Prior period (same length)", "YoY (same dates)"],
-                index=1,
-            )
-
-        elif analysis_view == "Month / Year Compare":
-            multi_granularity = st.selectbox(
-                "Compare By",
-                ["Month", "Year"],
-                index=0,
-                key="my_compare_by",
-            )
-            period_options = (
-                available_month_labels(df_all)
-                if multi_granularity == "Month"
-                else available_year_labels(df_all)
-            )
-            timeframe = "Custom Months" if multi_granularity == "Month" else "Custom Years"
-
-            current_one = st.selectbox(
-                f"Current {multi_granularity}",
-                options=period_options,
-                index=(len(period_options) - 1 if period_options else 0),
-            )
-            compare_one = st.selectbox(
-                f"Compare {multi_granularity}",
-                options=period_options,
-                index=(len(period_options) - 2 if len(period_options) > 1 else 0),
-            )
-
-            current_labels_sel = [current_one] if current_one else []
-            compare_labels_sel = [compare_one] if compare_one else []
-            compare_mode = "Custom selection" if compare_labels_sel else "None"
-
-        elif analysis_view == "Lookup Center":
-            timeframe = "Last 8 weeks"
-            compare_mode = "None"
-
-        else:
-            timeframe = "Multi Selection"
-            compare_mode = "None"
-            multi_granularity = "Year"
-            current_labels_sel = []
-            compare_labels_sel = []
-
-        min_sales = st.number_input("Min Sales ($) for lists", min_value=0.0, value=0.0, step=100.0)
-        min_units = st.number_input("Min Units for lists", min_value=0.0, value=0.0, step=10.0)
-        driver_level = st.selectbox("Driver Level", ["SKU", "Vendor", "Retailer"], index=0)
-        show_full_history_lifecycle = st.toggle("Lifecycle uses full history", value=True)
-
-    df_scope = df_all.copy()
-    if scope == "Retailer" and scope_pick:
-        df_scope = df_scope[df_scope["Retailer"].isin(scope_pick)]
-    elif scope == "Vendor" and scope_pick:
-        df_scope = df_scope[df_scope["Vendor"].isin(scope_pick)]
-    elif scope == "SKU" and scope_pick:
-        df_scope = df_scope[df_scope["SKU"].isin(scope_pick)]
-
-    if analysis_view == "Data Management Center":
-        render_data_management_center(vm, store)
-        return
-
-    if analysis_view == "Month / Year Compare":
-        dfA = filter_by_period_labels(df_scope, current_labels_sel, multi_granularity)
-        dfB = (
-            filter_by_period_labels(df_scope, compare_labels_sel, multi_granularity)
-            if compare_labels_sel
-            else df_scope.iloc[0:0].copy()
-        )
-        pA = period_from_df(dfA)
-        pB = period_from_df(dfB) if not dfB.empty else None
-
-        if pA is None:
-            st.info("Choose one or more months/years to begin.")
-            return
-
-        a_lbl = compact_selection_label(current_labels_sel, multi_granularity)
-        b_lbl = compact_selection_label(compare_labels_sel, multi_granularity) if pB is not None else None
-
-    elif analysis_view == "Multi Month / Year Compare":
-        dfA = df_scope.copy()
-        dfB = df_scope.iloc[0:0].copy()
-        pA = None
-        pB = None
-        a_lbl = None
-        b_lbl = None
-
-    else:
-        pA = pick_period(df_scope, timeframe)
-        if pA is None:
-            st.info("Upload or ingest data to begin.")
-            return
-
-        dfA = filter_by_period(df_scope, pA)
-
-        if compare_mode == "None":
-            pB = None
-            dfB = dfA.iloc[0:0].copy()
-        elif compare_mode.startswith("Prior"):
-            pB = period_prev_same_length(pA)
-            dfB = filter_by_period(df_scope, pB)
-        else:
-            pB = period_yoy(pA)
-            dfB = filter_by_period(df_scope, pB)
-
-        a_lbl, b_lbl = ab_labels(timeframe, compare_mode, pA, pB)
-
-    st.sidebar.markdown("### Period Definition")
-    if analysis_view == "Multi Month / Year Compare":
-        st.sidebar.markdown(
-            "<span style='opacity:0.75'>Multi-select analysis mode</span>",
-            unsafe_allow_html=True,
-        )
-    else:
-        st.sidebar.markdown(
-            f"**Current:** {a_lbl}<br><span style='opacity:0.8'>{format_period_range(pA)}</span>",
-            unsafe_allow_html=True,
-        )
-        if compare_mode != "None" and pB is not None:
-            st.sidebar.markdown(
-                f"**Compare:** {b_lbl}<br><span style='opacity:0.8'>{format_period_range(pB)}</span>",
-                unsafe_allow_html=True,
-            )
-        else:
-            st.sidebar.markdown(
-                "<span style='opacity:0.75'>Compare: None</span>",
-                unsafe_allow_html=True,
-            )
-    st.sidebar.divider()
-
-    kA = calc_kpis(dfA)
-    kB = calc_kpis(dfB) if pB is not None else {k: 0.0 for k in kA.keys()}
-
-    df_hist_for_new = df_all.copy()
-    if scope == "Retailer" and scope_pick:
-        df_hist_for_new = df_hist_for_new[df_hist_for_new["Retailer"].isin(scope_pick)]
-    elif scope == "Vendor" and scope_pick:
-        df_hist_for_new = df_hist_for_new[df_hist_for_new["Vendor"].isin(scope_pick)]
-    elif scope == "SKU" and scope_pick:
-        df_hist_for_new = df_hist_for_new[df_hist_for_new["SKU"].isin(scope_pick)]
-
-    if analysis_view == "Multi Month / Year Compare":
-        st.markdown(
-            f"""
-            <div style="display:flex; gap:10px; flex-wrap:wrap; align-items:center; margin: 4px 0 10px 0;">
-                <span style="padding:6px 10px; border-radius:999px; border:1px solid rgba(128,128,128,0.22); background: var(--secondary-background-color); color: var(--text-color); font-weight:700; font-size:12px;">Scope: {scope}</span>
-                <span style="padding:6px 10px; border-radius:999px; border:1px solid rgba(128,128,128,0.22); background: var(--secondary-background-color); color: var(--text-color); font-weight:700; font-size:12px;">Mode: Multi-select period analysis</span>
-                <span style="padding:6px 10px; border-radius:999px; border:1px solid rgba(128,128,128,0.22); background: var(--secondary-background-color); color: var(--text-color); font-weight:700; font-size:12px;">Content View: {content_view}</span>
-            </div>
-            """,
-            unsafe_allow_html=True,
-        )
-    else:
-        cur_range = format_period_range(pA)
-        cmp_range = format_period_range(pB) if pB is not None else ""
-        cmp_name = b_lbl or ""
-        st.markdown(
-            f"""<div style="display:flex; gap:10px; flex-wrap:wrap; align-items:center; margin: 4px 0 10px 0;">
-            <span style="padding:6px 10px; border-radius:999px; border:1px solid rgba(128,128,128,0.22); background: var(--secondary-background-color); color: var(--text-color); font-weight:700; font-size:12px;">Scope: {scope}</span>
-            <span style="padding:6px 10px; border-radius:999px; border:1px solid rgba(128,128,128,0.22); background: var(--secondary-background-color); color: var(--text-color); font-weight:700; font-size:12px;">Current: {a_lbl} • {cur_range}</span>
-            {(f'<span style="padding:6px 10px; border-radius:999px; border:1px solid rgba(128,128,128,0.22); background: var(--secondary-background-color); color: var(--text-color); font-weight:700; font-size:12px;">Compare: {cmp_name} • {cmp_range}</span>' if compare_mode != "None" and pB is not None else '<span style="padding:6px 10px; border-radius:999px; border:1px solid rgba(128,128,128,0.22); background: var(--secondary-background-color); color: var(--text-color); font-weight:700; font-size:12px; opacity:0.75;">Compare: None</span>')}
-            <span style="padding:6px 10px; border-radius:999px; border:1px solid rgba(128,128,128,0.22); background: var(--secondary-background-color); color: var(--text-color); font-weight:700; font-size:12px;">Content View: {content_view}</span>
-            </div>""",
-            unsafe_allow_html=True,
-        )
-
-    st.write("")
-
-    headline_bits = []
-    if analysis_view == "Multi Month / Year Compare":
-        headline_bits.append("Use the controls inside this tab to analyze multiple months or years together.")
-        headline_bits.append("The matrix table highlights the highest selected period in green and the lowest in red for each row.")
-        headline_bits.append("Use Rows By to switch between retailer and vendor views.")
-    else:
-        sales_delta = kA["Sales"] - kB.get("Sales", 0.0)
-        units_delta = kA["Units"] - kB.get("Units", 0.0)
-        asp_delta = kA["ASP"] - kB.get("ASP", 0.0)
-        drv = drivers(dfA, dfB, driver_level)
-        top_pos = drv[drv["Sales_Δ"] > 0].head(1) if drv is not None and not drv.empty and "Sales_Δ" in drv.columns else pd.DataFrame()
-        top_neg = drv[drv["Sales_Δ"] < 0].tail(1) if drv is not None and not drv.empty and "Sales_Δ" in drv.columns else pd.DataFrame()
-
-        if compare_mode != "None":
-            headline_bits.append(
-                f"Sales {'up' if sales_delta >= 0 else 'down'} **{money(abs(sales_delta))}** vs comparison."
-            )
-            headline_bits.append(
-                f"Units: **{kA['Units']:,.0f}** ({'up' if units_delta >= 0 else 'down'} **{abs(units_delta):,.0f}** vs comparison)."
-            )
-            headline_bits.append(
-                f"ASP: **{money(kA['ASP'])}** ({'up' if asp_delta >= 0 else 'down'} **{money(abs(asp_delta))}** vs comparison)."
-            )
-            if not top_pos.empty:
-                headline_bits.append(
-                    f"Top driver: **{top_pos.iloc[0][driver_level]}** ({money(float(top_pos.iloc[0]['Sales_Δ']))})."
-                )
-            if not top_neg.empty:
-                headline_bits.append(
-                    f"Top drag: **{top_neg.iloc[0][driver_level]}** ({money(float(top_neg.iloc[0]['Sales_Δ']))})."
-                )
-        else:
-            headline_bits.append("Choose a comparison mode to see drivers and deltas.")
-
-    def _md_bold_to_html(s: str) -> str:
-        parts = []
-        last = 0
-        for mm in _re.finditer(r"\*\*(.+?)\*\*", s):
-            parts.append(_html.escape(s[last:mm.start()]))
-            parts.append(f"<strong>{_html.escape(mm.group(1))}</strong>")
-            last = mm.end()
-        parts.append(_html.escape(s[last:]))
-        return "".join(parts)
-
-    _lis = "".join([f"<li>{_md_bold_to_html(x)}</li>" for x in headline_bits])
+def render(ctx: dict):
     st.markdown(
-        f"<div class='intel-card'><div class='intel-header'>INTELLIGENCE SUMMARY</div><div class='intel-body'><ul>{_lis}</ul></div></div>",
+        """
+        <style>
+        .kpi-card .kpi-title{font-size:13px !important;}
+        .kpi-card .kpi-value{font-size:31px !important;}
+        .kpi-card .kpi-delta{font-size:15px !important;}
+        .kpi-card .kpi-sub{font-size:15px !important;}
+        .kpi-card .top-two-item .kpi-big-name{font-size:22px !important;}
+        .kpi-card .top-two-item .kpi-value{font-size:30px !important;}
+        .kpi-card .top-two-item .kpi-delta{font-size:14px !important;}
+        .kpi-card .top-two-item .kpi-sub{font-size:14px !important;}
+        </style>
+        """,
         unsafe_allow_html=True,
     )
 
-    ctx = dict(
+    dfA = ctx["dfA"]
+    dfB = ctx["dfB"]
+    kA = ctx["kA"]
+    kB = ctx["kB"]
+    a_lbl = ctx["a_lbl"]
+    b_lbl = ctx["b_lbl"]
+    compare_mode = ctx["compare_mode"]
+    min_sales = ctx["min_sales"]
+
+    render_standard_view(
         dfA=dfA,
         dfB=dfB,
         kA=kA,
@@ -706,20 +53,909 @@ def run_app():
         b_lbl=b_lbl,
         compare_mode=compare_mode,
         min_sales=min_sales,
-        min_units=min_units,
-        driver_level=driver_level,
-        df_scope=df_scope,
-        pA=pA,
-        pB=pB,
-        df_hist_for_new=df_hist_for_new,
-        show_full_history_lifecycle=show_full_history_lifecycle,
-        analysis_view=analysis_view,
-        content_view=content_view,
-        scope=scope,
-        scope_pick=scope_pick,
     )
 
-    if get_global_view_mode() == "Visual Analytics":
-        render_visual_analysis_view(ctx)
-    else:
-        render_current_analysis_view(ctx)
+
+def render_visual_only(ctx: dict):
+    st.markdown(
+        """
+        <style>
+        .kpi-card .kpi-title{font-size:13px !important;}
+        .kpi-card .kpi-value{font-size:31px !important;}
+        .kpi-card .kpi-delta{font-size:15px !important;}
+        .kpi-card .kpi-sub{font-size:15px !important;}
+        .kpi-card .top-two-item .kpi-big-name{font-size:22px !important;}
+        .kpi-card .top-two-item .kpi-value{font-size:30px !important;}
+        .kpi-card .top-two-item .kpi-delta{font-size:14px !important;}
+        .kpi-card .top-two-item .kpi-sub{font-size:14px !important;}
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
+
+    render_visual_executive_dashboard(
+        dfA=ctx["dfA"],
+        dfB=ctx["dfB"],
+        kA=ctx["kA"],
+        kB=ctx["kB"],
+        a_lbl=ctx["a_lbl"],
+        b_lbl=ctx["b_lbl"],
+        min_sales=ctx["min_sales"],
+    )
+
+
+def render_visual_executive_dashboard(
+    dfA: pd.DataFrame,
+    dfB: pd.DataFrame,
+    kA: dict,
+    kB: dict,
+    a_lbl: str,
+    b_lbl: str,
+    min_sales: float,
+):
+    PERIOD_DOMAIN = [a_lbl, b_lbl]
+    PERIOD_RANGE = ["#1f77b4", "#ff7f0e"]
+
+    Q_DOMAIN = ["Q1", "Q2", "Q3", "Q4"]
+    Q_RANGE = ["#dbe7f5", "#a8c4e5", "#6f9fd1", "#2f6fb3"]
+
+    POSITIVE_BAR = "#2e7d32"
+    NEGATIVE_BAR = "#c62828"
+
+    def pct_change(cur: float, prev: float):
+        if prev == 0:
+            return np.nan if cur == 0 else np.inf
+        return (cur - prev) / prev
+
+    def delta_html(cur: float, prev: float, is_money: bool):
+        d = float(cur) - float(prev)
+        pc = pct_change(float(cur), float(prev))
+        color = "#2e7d32" if d > 0 else ("#c62828" if d < 0 else "var(--text-color)")
+        arrow = "▲ " if d > 0 else ("▼ " if d < 0 else "")
+        abs_s = money(d) if is_money else f"{d:,.0f}"
+        return (
+            f"<span class='delta-abs' style='color:{color}'>{arrow}{abs_s}</span>"
+            f"<span class='delta-pct' style='color:{color}'>({pct_fmt(pc)})</span>"
+        )
+
+    def prep_compare_metric(
+        df_cur: pd.DataFrame,
+        df_cmp: pd.DataFrame,
+        level: str,
+        metric: str = "Sales",
+        top_n: int = 10,
+    ):
+        cur = df_cur.groupby(level, dropna=False, as_index=False).agg(Current=(metric, "sum"))
+        cmp = df_cmp.groupby(level, dropna=False, as_index=False).agg(Compare=(metric, "sum"))
+        out = cur.merge(cmp, on=level, how="outer").fillna(0.0)
+        out[level] = out[level].astype(str)
+        out["Delta"] = out["Current"] - out["Compare"]
+        out["Total"] = out["Current"] + out["Compare"]
+        out = out.sort_values(["Total", level], ascending=[False, True]).head(top_n).copy()
+        return out
+
+    def prep_quarter_stacked(df_cur: pd.DataFrame, df_cmp: pd.DataFrame, metric: str):
+        required = {"Quarter"}
+        if not required.issubset(df_cur.columns) or not required.issubset(df_cmp.columns):
+            return pd.DataFrame()
+
+        cur = df_cur.copy()
+        cmp = df_cmp.copy()
+
+        cur["Quarter"] = cur["Quarter"].astype(str).str.upper().str.strip()
+        cmp["Quarter"] = cmp["Quarter"].astype(str).str.upper().str.strip()
+
+        cur = cur[cur["Quarter"].isin(Q_DOMAIN)]
+        cmp = cmp[cmp["Quarter"].isin(Q_DOMAIN)]
+
+        if cur.empty or cmp.empty:
+            return pd.DataFrame()
+
+        a = cur.groupby("Quarter", as_index=False)[metric].sum()
+        b = cmp.groupby("Quarter", as_index=False)[metric].sum()
+
+        a["Period"] = a_lbl
+        b["Period"] = b_lbl
+        a.rename(columns={metric: "Value"}, inplace=True)
+        b.rename(columns={metric: "Value"}, inplace=True)
+
+        out = pd.concat([a, b], ignore_index=True)
+        if out.empty:
+            return out
+
+        out["Quarter"] = pd.Categorical(out["Quarter"], categories=Q_DOMAIN, ordered=True)
+        out = out.sort_values(["Period", "Quarter"]).copy()
+
+        out["Label"] = out["Value"].map(lambda v: f"{v:,.0f}" if metric == "Units" else money(v))
+
+        out["Start"] = out.groupby("Period")["Value"].cumsum() - out["Value"]
+        out["End"] = out["Start"] + out["Value"]
+
+        out["LabelX"] = out["Start"] + (out["Value"] * 0.08)
+
+        total_by_period = out.groupby("Period")["Value"].transform("sum")
+        out["ShowLabel"] = np.where(
+            (out["Value"] > 0) & (out["Value"] / total_by_period >= 0.08),
+            out["Label"],
+            "",
+        )
+
+        return out
+
+    def stacked_total_chart(
+        metric_name: str,
+        df_cur: pd.DataFrame,
+        df_cmp: pd.DataFrame,
+        fallback_cur: float,
+        fallback_cmp: float,
+    ):
+        metric = "Units" if metric_name == "Units" else "Sales"
+        stacked = prep_quarter_stacked(df_cur, df_cmp, metric)
+
+        if stacked.empty:
+            chart_df = pd.DataFrame(
+                [
+                    {"Period": a_lbl, "Value": float(fallback_cur)},
+                    {"Period": b_lbl, "Value": float(fallback_cmp)},
+                ]
+            )
+
+            xmax = float(chart_df["Value"].max()) if not chart_df.empty else 0.0
+            xmax = xmax * 1.20 if xmax > 0 else 1.0
+
+            color_enc = alt.Color(
+                "Period:N",
+                scale=alt.Scale(domain=PERIOD_DOMAIN, range=PERIOD_RANGE),
+                legend=None,
+            )
+
+            bars = (
+                alt.Chart(chart_df)
+                .mark_bar(cornerRadiusTopRight=5, cornerRadiusBottomRight=5)
+                .encode(
+                    y=alt.Y("Period:N", title="", sort=PERIOD_DOMAIN),
+                    x=alt.X("Value:Q", title=metric_name, scale=alt.Scale(domain=[0, xmax])),
+                    color=color_enc,
+                )
+                .properties(height=150)
+            )
+
+            labels = (
+                alt.Chart(chart_df)
+                .mark_text(dx=8, align="left", fontSize=14, fontWeight="bold")
+                .encode(
+                    y=alt.Y("Period:N", sort=PERIOD_DOMAIN),
+                    x=alt.X("Value:Q", scale=alt.Scale(domain=[0, xmax])),
+                    text=alt.Text("Value:Q", format=",.0f" if metric == "Units" else ",.2f"),
+                    color=color_enc,
+                )
+            )
+
+            return bars + labels
+
+        bars = (
+            alt.Chart(stacked)
+            .mark_bar(cornerRadiusTopRight=5, cornerRadiusBottomRight=5)
+            .encode(
+                y=alt.Y("Period:N", title="", sort=PERIOD_DOMAIN),
+                x=alt.X("Value:Q", title=metric_name),
+                color=alt.Color(
+                    "Quarter:N",
+                    scale=alt.Scale(domain=Q_DOMAIN, range=Q_RANGE),
+                    sort=Q_DOMAIN,
+                    legend=alt.Legend(orient="top", direction="horizontal", title=""),
+                ),
+                order=alt.Order("Quarter:N", sort="ascending"),
+                tooltip=[
+                    alt.Tooltip("Period:N", title="Period"),
+                    alt.Tooltip("Quarter:N", title="Quarter"),
+                    alt.Tooltip("Value:Q", title=metric_name, format=",.0f" if metric == "Units" else ",.2f"),
+                ],
+            )
+            .properties(height=165)
+        )
+
+        labels = (
+            alt.Chart(stacked[stacked["ShowLabel"] != ""])
+            .mark_text(
+                align="left",
+                baseline="middle",
+                dx=0,
+                fontSize=12,
+                fontWeight="bold",
+                color="#111111",
+            )
+            .encode(
+                y=alt.Y("Period:N", sort=PERIOD_DOMAIN),
+                x=alt.X("LabelX:Q", title=metric_name),
+                text="ShowLabel:N",
+                detail="Quarter:N",
+            )
+        )
+
+        return bars + labels
+
+    def prep_grouped_share(df: pd.DataFrame, dim_name: str):
+        if df.empty:
+            return pd.DataFrame(columns=[dim_name, "Series", "Value", "SharePct", "Label", "SortTotal", "Start"])
+
+        long_df = df[[dim_name, "Current", "Compare", "Total"]].melt(
+            id_vars=[dim_name, "Total"],
+            value_vars=["Current", "Compare"],
+            var_name="Series",
+            value_name="Value",
+        )
+
+        long_df["Series"] = long_df["Series"].replace({"Current": a_lbl, "Compare": b_lbl})
+        long_df["SharePct"] = np.where(long_df["Total"] > 0, long_df["Value"] / long_df["Total"], 0.0)
+        long_df["Label"] = long_df.apply(
+            lambda r: f'{money(r["Value"])} • {r["SharePct"]:.0%}' if r["Value"] > 0 else "",
+            axis=1,
+        )
+        long_df["SortTotal"] = long_df["Total"]
+        long_df["Start"] = 0.0
+        return long_df
+
+    def grouped_lollipop_chart(long_df: pd.DataFrame, dim_name: str, height: int = 560):
+        if long_df.empty:
+            return None
+
+        xmax = float(long_df["Value"].max()) if not long_df.empty else 0.0
+        xmax = xmax * 1.40 if xmax > 0 else 1.0
+
+        color_enc = alt.Color(
+            "Series:N",
+            scale=alt.Scale(domain=PERIOD_DOMAIN, range=PERIOD_RANGE),
+            title="",
+            legend=alt.Legend(orient="bottom", direction="horizontal"),
+        )
+
+        text_color_enc = alt.Color(
+            "Series:N",
+            scale=alt.Scale(domain=PERIOD_DOMAIN, range=PERIOD_RANGE),
+            legend=None,
+        )
+
+        y_enc = alt.Y(
+            f"{dim_name}:N",
+            sort=alt.SortField(field="SortTotal", order="descending"),
+            title="",
+            scale=alt.Scale(paddingInner=0.55, paddingOuter=0.22),
+        )
+
+        yoff_enc = alt.YOffset(
+            "Series:N",
+            sort=[a_lbl, b_lbl],
+            scale=alt.Scale(paddingInner=0.48),
+        )
+
+        rules = (
+            alt.Chart(long_df)
+            .mark_rule(strokeWidth=2.5)
+            .encode(
+                y=y_enc,
+                yOffset=yoff_enc,
+                x=alt.X("Start:Q", scale=alt.Scale(domain=[0, xmax], nice=True), title="Sales"),
+                x2="Value:Q",
+                color=color_enc,
+            )
+        )
+
+        dots = (
+            alt.Chart(long_df)
+            .mark_circle(size=150)
+            .encode(
+                y=y_enc,
+                yOffset=yoff_enc,
+                x=alt.X("Value:Q", scale=alt.Scale(domain=[0, xmax], nice=True), title="Sales"),
+                color=color_enc,
+                tooltip=[
+                    alt.Tooltip(f"{dim_name}:N", title=dim_name),
+                    alt.Tooltip("Series:N", title="Series"),
+                    alt.Tooltip("Value:Q", title="Sales", format=",.2f"),
+                    alt.Tooltip("SharePct:Q", title="% of row total", format=".0%"),
+                ],
+            )
+        )
+
+        labels = (
+            alt.Chart(long_df[long_df["Label"] != ""])
+            .mark_text(
+                align="left",
+                dx=10,
+                baseline="middle",
+                fontSize=15,
+                fontWeight="bold",
+            )
+            .encode(
+                y=y_enc,
+                yOffset=yoff_enc,
+                x=alt.X("Value:Q", scale=alt.Scale(domain=[0, xmax], nice=True)),
+                text="Label:N",
+                color=text_color_enc,
+            )
+        )
+
+        return (rules + dots + labels).properties(height=height)
+
+    def prep_sku_movers():
+        sA = dfA.groupby("SKU", as_index=False).agg(Current=("Sales", "sum"))
+        sB = dfB.groupby("SKU", as_index=False).agg(Compare=("Sales", "sum"))
+        sku = sA.merge(sB, on="SKU", how="outer").fillna(0.0)
+        sku["Delta"] = sku["Current"] - sku["Compare"]
+        sku = sku[(sku["Current"] >= min_sales) | (sku["Compare"] >= min_sales)].copy()
+
+        inc = sku.sort_values(["Delta", "SKU"], ascending=[False, True]).head(10).copy()
+        dec = sku.sort_values(["Delta", "SKU"], ascending=[True, True]).head(10).copy()
+        inc["Start"] = 0.0
+        dec["Start"] = 0.0
+        return inc, dec
+
+    def mover_lollipop_chart(df: pd.DataFrame, metric_title: str, positive: bool, height: int = 430):
+        if df.empty:
+            return None
+
+        df = df.copy()
+        df["DeltaLabel"] = df["Delta"].map(money)
+
+        xmax = float(df["Delta"].max()) if positive else float(df["Delta"].abs().max())
+        xmax = xmax * 1.40 if xmax > 0 else 1.0
+
+        if positive:
+            order = alt.SortField(field="Delta", order="descending")
+            x_scale = alt.Scale(domain=[0, xmax], nice=True)
+            color = POSITIVE_BAR
+            align = "left"
+            dx = 10
+        else:
+            order = alt.SortField(field="Delta", order="ascending")
+            x_scale = alt.Scale(domain=[-xmax, 0], nice=True)
+            color = NEGATIVE_BAR
+            align = "right"
+            dx = -10
+
+        y_enc = alt.Y(
+            "SKU:N",
+            sort=order,
+            title="",
+            scale=alt.Scale(paddingInner=0.35, paddingOuter=0.18),
+        )
+
+        rules = (
+            alt.Chart(df)
+            .mark_rule(strokeWidth=2.5, color=color)
+            .encode(
+                y=y_enc,
+                x=alt.X("Start:Q", scale=x_scale, title=metric_title),
+                x2="Delta:Q",
+            )
+        )
+
+        dots = (
+            alt.Chart(df)
+            .mark_circle(size=150, color=color)
+            .encode(
+                y=y_enc,
+                x=alt.X("Delta:Q", scale=x_scale, title=metric_title),
+                tooltip=[
+                    alt.Tooltip("SKU:N", title="SKU"),
+                    alt.Tooltip("Current:Q", title=a_lbl, format=",.2f"),
+                    alt.Tooltip("Compare:Q", title=b_lbl, format=",.2f"),
+                    alt.Tooltip("Delta:Q", title="Change", format=",.2f"),
+                ],
+            )
+        )
+
+        labels = (
+            alt.Chart(df)
+            .mark_text(
+                align=align,
+                dx=dx,
+                color=color,
+                fontSize=15,
+                fontWeight="bold",
+            )
+            .encode(
+                y=y_enc,
+                x=alt.X("Delta:Q", scale=x_scale),
+                text="DeltaLabel:N",
+            )
+        )
+
+        return (rules + dots + labels).properties(height=height)
+
+    def prep_contrib(df: pd.DataFrame):
+        if df.empty:
+            return pd.DataFrame(columns=["Retailer", "Current", "Compare", "Delta", "ContribPct", "PctLabel", "DeltaLabel", "BarColor", "Start"])
+
+        out = df.copy().sort_values("Delta", ascending=False).copy()
+        denom = float(out["Delta"].abs().sum())
+        out["ContribPct"] = np.where(denom > 0, out["Delta"].abs() / denom, 0.0)
+        out["PctLabel"] = (out["ContribPct"] * 100).round(0).astype(int).astype(str) + "%"
+        out["DeltaLabel"] = out["Delta"].map(money)
+        out["BarColor"] = np.where(out["Delta"] >= 0, POSITIVE_BAR, NEGATIVE_BAR)
+        out["Start"] = 0.0
+        return out
+
+    def contrib_lollipop_chart(df: pd.DataFrame, height: int = 540):
+        if df.empty:
+            return None
+
+        xmax = float(df["Delta"].max()) if not df.empty else 0.0
+        xmin = float(df["Delta"].min()) if not df.empty else 0.0
+        pad = max(abs(xmax), abs(xmin)) * 0.52 if max(abs(xmax), abs(xmin)) > 0 else 1.0
+
+        x_scale = alt.Scale(domain=[xmin - pad, xmax + pad], nice=True)
+        order = alt.SortField(field="Delta", order="descending")
+
+        y_enc = alt.Y(
+            "Retailer:N",
+            sort=order,
+            title="",
+            scale=alt.Scale(paddingInner=0.38, paddingOuter=0.18),
+        )
+
+        rules = (
+            alt.Chart(df)
+            .mark_rule(strokeWidth=2.5)
+            .encode(
+                y=y_enc,
+                x=alt.X("Start:Q", scale=x_scale, title="Sales Delta"),
+                x2="Delta:Q",
+                color=alt.Color("BarColor:N", scale=None, legend=None),
+            )
+        )
+
+        dots = (
+            alt.Chart(df)
+            .mark_circle(size=150)
+            .encode(
+                y=y_enc,
+                x=alt.X("Delta:Q", scale=x_scale, title="Sales Delta"),
+                color=alt.Color("BarColor:N", scale=None, legend=None),
+                tooltip=[
+                    alt.Tooltip("Retailer:N", title="Retailer"),
+                    alt.Tooltip("Current:Q", title=a_lbl, format=",.2f"),
+                    alt.Tooltip("Compare:Q", title=b_lbl, format=",.2f"),
+                    alt.Tooltip("Delta:Q", title="Delta", format=",.2f"),
+                    alt.Tooltip("ContribPct:Q", title="% of total change", format=".0%"),
+                ],
+            )
+        )
+
+        pos_df = df[df["Delta"] >= 0].copy()
+        neg_df = df[df["Delta"] < 0].copy()
+
+        pos_delta_labels = (
+            alt.Chart(pos_df)
+            .mark_text(dx=10, align="left", fontSize=15, fontWeight="bold")
+            .encode(
+                y=y_enc,
+                x=alt.X("Delta:Q", scale=x_scale),
+                text="DeltaLabel:N",
+                color=alt.Color("BarColor:N", scale=None, legend=None),
+            )
+        )
+
+        pos_pct_labels = (
+            alt.Chart(pos_df)
+            .mark_text(dx=10, dy=15, align="left", fontSize=13, fontWeight="bold")
+            .encode(
+                y=y_enc,
+                x=alt.X("Delta:Q", scale=x_scale),
+                text="PctLabel:N",
+                color=alt.Color("BarColor:N", scale=None, legend=None),
+            )
+        )
+
+        neg_delta_labels = (
+            alt.Chart(neg_df)
+            .mark_text(dx=-10, align="right", fontSize=15, fontWeight="bold")
+            .encode(
+                y=y_enc,
+                x=alt.X("Delta:Q", scale=x_scale),
+                text="DeltaLabel:N",
+                color=alt.Color("BarColor:N", scale=None, legend=None),
+            )
+        )
+
+        neg_pct_labels = (
+            alt.Chart(neg_df)
+            .mark_text(dx=-10, dy=15, align="right", fontSize=13, fontWeight="bold")
+            .encode(
+                y=y_enc,
+                x=alt.X("Delta:Q", scale=x_scale),
+                text="PctLabel:N",
+                color=alt.Color("BarColor:N", scale=None, legend=None),
+            )
+        )
+
+        return (rules + dots + pos_delta_labels + pos_pct_labels + neg_delta_labels + neg_pct_labels).properties(height=height)
+
+    c1, c2, c3 = st.columns(3)
+    with c1:
+        kpi_card("Total Sales", money(kA["Sales"]), delta_html(kA["Sales"], kB["Sales"], True))
+    with c2:
+        kpi_card("Total Units", f"{kA['Units']:,.0f}", delta_html(kA["Units"], kB["Units"], False))
+    with c3:
+        kpi_card("Avg Selling Price", money(kA["ASP"]), delta_html(kA["ASP"], kB["ASP"], True))
+
+    st.write("")
+
+    sales_col, units_col = st.columns(2)
+
+    with sales_col:
+        st.markdown(f"#### Sales Totals ({a_lbl} vs {b_lbl})")
+        sales_chart = stacked_total_chart(
+            metric_name="Sales",
+            df_cur=dfA,
+            df_cmp=dfB,
+            fallback_cur=float(kA["Sales"]),
+            fallback_cmp=float(kB["Sales"]),
+        )
+        st.altair_chart(sales_chart, use_container_width=True)
+
+    with units_col:
+        st.markdown(f"#### Units Totals ({a_lbl} vs {b_lbl})")
+        units_chart = stacked_total_chart(
+            metric_name="Units",
+            df_cur=dfA,
+            df_cmp=dfB,
+            fallback_cur=float(kA["Units"]),
+            fallback_cmp=float(kB["Units"]),
+        )
+        st.altair_chart(units_chart, use_container_width=True)
+
+    st.write("")
+
+    driver_r = prep_compare_metric(dfA, dfB, "Retailer", metric="Sales", top_n=12)
+    driver_r = prep_contrib(driver_r)
+
+    if not driver_r.empty:
+        st.markdown("#### Retailer Contribution to Change")
+        rc_chart = contrib_lollipop_chart(driver_r, height=540)
+        st.altair_chart(rc_chart, use_container_width=True)
+
+    retailer = prep_compare_metric(dfA, dfB, "Retailer", metric="Sales", top_n=10)
+    vendor = prep_compare_metric(dfA, dfB, "Vendor", metric="Sales", top_n=10)
+
+    left, right = st.columns(2)
+
+    with left:
+        st.markdown("#### Top Retailers")
+        retailer_long = prep_grouped_share(retailer, "Retailer")
+        if retailer_long.empty:
+            st.caption("No retailer data available.")
+        else:
+            retailer_chart = grouped_lollipop_chart(retailer_long, "Retailer", height=560)
+            st.altair_chart(retailer_chart, use_container_width=True)
+
+    with right:
+        st.markdown("#### Top Vendors")
+        vendor_long = prep_grouped_share(vendor, "Vendor")
+        if vendor_long.empty:
+            st.caption("No vendor data available.")
+        else:
+            vendor_chart = grouped_lollipop_chart(vendor_long, "Vendor", height=560)
+            st.altair_chart(vendor_chart, use_container_width=True)
+
+    st.write("")
+
+    inc, dec = prep_sku_movers()
+
+    left2, right2 = st.columns(2)
+
+    with left2:
+        st.markdown("#### Top SKU Increases")
+        if inc.empty:
+            st.caption("No increasing SKUs found.")
+        else:
+            inc_chart = mover_lollipop_chart(inc, "Sales Change", positive=True, height=430)
+            st.altair_chart(inc_chart, use_container_width=True)
+
+    with right2:
+        st.markdown("#### Top SKU Decreases")
+        if dec.empty:
+            st.caption("No declining SKUs found.")
+        else:
+            dec_chart = mover_lollipop_chart(dec, "Sales Change", positive=False, height=430)
+            st.altair_chart(dec_chart, use_container_width=True)
+
+
+def render_standard_view(
+    dfA: pd.DataFrame,
+    dfB: pd.DataFrame,
+    kA: dict,
+    kB: dict,
+    a_lbl: str,
+    b_lbl: str,
+    compare_mode: str,
+    min_sales: float,
+):
+    def render_shaded_total_table(df: pd.DataFrame, height: int = 760):
+        st.dataframe(df, use_container_width=True, hide_index=True, height=height)
+
+    def pct_change(cur, prev):
+        if prev == 0:
+            return np.nan if cur == 0 else np.inf
+        return (cur - prev) / prev
+
+    def _delta_html(cur: float, prev: float, is_money: bool):
+        d = cur - prev
+        pc = pct_change(cur, prev)
+        color = "#2e7d32" if d > 0 else ("#c62828" if d < 0 else "var(--text-color)")
+        arrow = "▲ " if d > 0 else ("▼ " if d < 0 else "")
+        abs_s = money(d) if is_money else (f"{d:,.0f}" if abs(d) >= 1 else f"{d:,.2f}")
+        return (
+            f"<span class='delta-abs' style='color:{color}'>{arrow}{abs_s}</span>"
+            f"<span class='delta-pct' style='color:{color}'>({pct_fmt(pc)})</span>"
+        )
+
+    def kdelta(key: str) -> str:
+        cur = float(kA.get(key, 0.0))
+        prev = float(kB.get(key, 0.0))
+        return _delta_html(cur, prev, is_money=(key in ("Sales", "ASP")))
+
+    def _top_by_increase(level: str):
+        a = dfA.groupby(level, as_index=False).agg(Sales_A=("Sales", "sum"))
+        b = dfB.groupby(level, as_index=False).agg(Sales_B=("Sales", "sum"))
+        m = a.merge(b, on=level, how="outer").fillna(0.0)
+        m["Δ"] = m["Sales_A"] - m["Sales_B"]
+        if m.empty:
+            return None
+        r = m.sort_values("Δ", ascending=False).iloc[0]
+        return str(r[level]), float(r["Sales_A"]), float(r["Sales_B"])
+
+    def _top_decrease(level: str):
+        a = dfA.groupby(level, as_index=False).agg(Sales_A=("Sales", "sum"))
+        b = dfB.groupby(level, as_index=False).agg(Sales_B=("Sales", "sum"))
+        m = a.merge(b, on=level, how="outer").fillna(0.0)
+        m["Δ"] = m["Sales_A"] - m["Sales_B"]
+        if m.empty:
+            return None
+        r = m.sort_values("Δ", ascending=True).iloc[0]
+        return str(r[level]), float(r["Sales_A"]), float(r["Sales_B"])
+
+    def _top_two_with_compare(df_sel: pd.DataFrame, df_other: pd.DataFrame, level: str):
+        if df_sel.empty:
+            return []
+        cur = df_sel.groupby(level, as_index=False).agg(Sales=("Sales", "sum"), Units=("Units", "sum"))
+        if not df_other.empty:
+            oth = df_other.groupby(level, as_index=False).agg(
+                Other_Sales=("Sales", "sum"),
+                Other_Units=("Units", "sum"),
+            )
+        else:
+            oth = pd.DataFrame(columns=[level, "Other_Sales", "Other_Units"])
+        m = cur.merge(oth, on=level, how="left").fillna(0.0)
+        total_sales = float(m["Sales"].sum())
+        total_units = float(m["Units"].sum())
+        out = []
+        for _, r in m.sort_values(["Sales", level], ascending=[False, True]).head(2).iterrows():
+            sales = float(r["Sales"])
+            units = float(r["Units"])
+            out.append(
+                {
+                    "name": str(r[level]),
+                    "sales": sales,
+                    "other_sales": float(r["Other_Sales"]),
+                    "share": (sales / total_sales) if total_sales else np.nan,
+                    "units": units,
+                    "other_units": float(r["Other_Units"]),
+                    "unit_share": (units / total_units) if total_units else np.nan,
+                }
+            )
+        return out
+
+    c1, c2, c3 = st.columns(3)
+    with c1:
+        kpi_card("Total Sales", money(kA["Sales"]), kdelta("Sales"))
+    with c2:
+        kpi_card("Total Units", f"{kA['Units']:,.0f}", kdelta("Units"))
+    with c3:
+        kpi_card("Avg Selling Price", money(kA["ASP"]), kdelta("ASP"))
+
+    cur_sku = dfA.groupby("SKU", as_index=False).agg(Sales=("Sales", "sum"), Units=("Units", "sum"))
+    cmp_sku = dfB.groupby("SKU", as_index=False).agg(Sales=("Sales", "sum"), Units=("Units", "sum"))
+
+    cur_only = cur_sku.merge(
+        cmp_sku[["SKU", "Sales"]].rename(columns={"Sales": "Compare_Sales"}),
+        on="SKU",
+        how="left",
+    ).fillna(0.0)
+    cur_only = cur_only[(cur_only["Sales"] > 0) & (cur_only["Compare_Sales"] <= 0)].copy()
+
+    cmp_only = cmp_sku.merge(
+        cur_sku[["SKU", "Sales"]].rename(columns={"Sales": "Current_Sales"}),
+        on="SKU",
+        how="left",
+    ).fillna(0.0)
+    cmp_only = cmp_only[(cmp_only["Sales"] > 0) & (cmp_only["Current_Sales"] <= 0)].copy()
+
+    new_count = int(len(cur_only))
+    new_sales = float(cur_only["Sales"].sum())
+    lost_count = int(len(cmp_only))
+    lost_sales = float(cmp_only["Sales"].sum())
+    net_count = new_count - lost_count
+    net_sales = new_sales - lost_sales
+    net_pct = (net_sales / lost_sales) if lost_sales != 0 else (np.nan if net_sales == 0 else np.inf)
+
+    n1, n2, n3 = st.columns(3)
+    with n1:
+        count_sales_card("New SKUs", new_count, new_sales, color="#2e7d32", signed_sales=True)
+    with n2:
+        count_sales_card("Lost SKUs", lost_count, -lost_sales, color="#c62828", signed_sales=True)
+    with n3:
+        count_sales_card(
+            "Net New vs Lost",
+            net_count,
+            net_sales,
+            color=("#2e7d32" if net_sales > 0 else ("#c62828" if net_sales < 0 else "var(--text-color)")),
+            signed_sales=True,
+            pct=net_pct,
+        )
+
+    st.write("")
+    g1, g2, g3, g4 = st.columns(4)
+    with g1:
+        selection_total_card(f"{a_lbl} Total", kA, kB)
+        st.write("")
+        selection_total_card(f"{b_lbl} Total", kB, kA)
+    with g2:
+        top_two_card(f"Top 2 Retailers ({a_lbl})", _top_two_with_compare(dfA, dfB, "Retailer"))
+        st.write("")
+        top_two_card(f"Top 2 Retailers ({b_lbl})", _top_two_with_compare(dfB, dfA, "Retailer"))
+    with g3:
+        top_two_card(f"Top 2 Vendors ({a_lbl})", _top_two_with_compare(dfA, dfB, "Vendor"))
+        st.write("")
+        top_two_card(f"Top 2 Vendors ({b_lbl})", _top_two_with_compare(dfB, dfA, "Vendor"))
+    with g4:
+        top_two_card(f"Top 2 SKUs ({a_lbl})", _top_two_with_compare(dfA, dfB, "SKU"))
+        st.write("")
+        top_two_card(f"Top 2 SKUs ({b_lbl})", _top_two_with_compare(dfB, dfA, "SKU"))
+
+    st.write("")
+    i1, i2, i3 = st.columns(3)
+    iR = _top_by_increase("Retailer")
+    iV = _top_by_increase("Vendor")
+    iS = _top_by_increase("SKU")
+    with i1:
+        if iR:
+            biggest_increase_card("Retailer w/ Biggest Increase", iR[0], iR[1], iR[2])
+    with i2:
+        if iV:
+            biggest_increase_card("Vendor w/ Biggest Increase", iV[0], iV[1], iV[2])
+    with i3:
+        if iS:
+            biggest_increase_card("SKU w/ Biggest Increase", iS[0], iS[1], iS[2])
+
+    d1, d2, d3 = st.columns(3)
+    decR = _top_decrease("Retailer")
+    decV = _top_decrease("Vendor")
+    decS = _top_decrease("SKU")
+    with d1:
+        if decR:
+            biggest_increase_card("Retailer w/ Biggest Decrease", decR[0], decR[1], decR[2])
+    with d2:
+        if decV:
+            biggest_increase_card("Vendor w/ Biggest Decrease", decV[0], decV[1], decV[2])
+    with d3:
+        if decS:
+            biggest_increase_card("SKU w/ Biggest Decrease", decS[0], decS[1], decS[2])
+
+    st.divider()
+    st.subheader("Current Only / Compare Only Activity")
+
+    cur_s = dfA.groupby("SKU", as_index=False).agg(Current_Units=("Units", "sum"), Current_Sales=("Sales", "sum"))
+    cmp_s = dfB.groupby("SKU", as_index=False).agg(Compare_Units=("Units", "sum"), Compare_Sales=("Sales", "sum"))
+
+    lost = cmp_s.merge(cur_s, on="SKU", how="left").fillna(0.0)
+    lost = lost[(lost["Compare_Sales"] > 0) & (lost["Current_Sales"] <= 0)].copy().sort_values(
+        "Compare_Sales", ascending=False
+    )
+
+    new_act = cur_s.merge(cmp_s, on="SKU", how="left").fillna(0.0)
+    new_act = new_act[(new_act["Current_Sales"] > 0) & (new_act["Compare_Sales"] <= 0)].copy().sort_values(
+        "Current_Sales", ascending=False
+    )
+
+    lcol, rcol = st.columns(2)
+    with lcol:
+        st.markdown("**Lost Activity — sold in compare, zero in current**")
+        if lost.empty:
+            st.caption("None.")
+        else:
+            show_lost = lost[["SKU", "Compare_Units", "Compare_Sales"]].rename(
+                columns={"Compare_Units": "Units", "Compare_Sales": "Sales"}
+            ).copy()
+            show_lost["Units"] = -show_lost["Units"]
+            show_lost["Sales"] = -show_lost["Sales"]
+            total_row = pd.DataFrame(
+                [{"SKU": "Total", "Units": show_lost["Units"].sum(), "Sales": show_lost["Sales"].sum()}]
+            )
+            show_lost = pd.concat([show_lost, total_row], ignore_index=True)
+            show_lost["Units"] = show_lost["Units"].map(lambda v: f"{v:,.0f}")
+            show_lost["Sales"] = show_lost["Sales"].map(money)
+            render_df(show_lost, height=360)
+
+    with rcol:
+        st.markdown("**New Activity — sold in current, zero in compare**")
+        if new_act.empty:
+            st.caption("None.")
+        else:
+            show_new = new_act[["SKU", "Current_Units", "Current_Sales"]].rename(
+                columns={"Current_Units": "Units", "Current_Sales": "Sales"}
+            ).copy()
+            total_row = pd.DataFrame(
+                [{"SKU": "Total", "Units": show_new["Units"].sum(), "Sales": show_new["Sales"].sum()}]
+            )
+            show_new = pd.concat([show_new, total_row], ignore_index=True)
+            show_new["Units"] = show_new["Units"].map(lambda v: f"{v:,.0f}")
+            show_new["Sales"] = show_new["Sales"].map(money)
+            render_df(show_new, height=360)
+
+    st.divider()
+    st.subheader("Comparison Detail")
+
+    pivot_dim = st.selectbox("Compare rows by", options=["Retailer", "Vendor"], index=0, key="mod_compare_dim")
+    comp_a = dfA.groupby(pivot_dim, as_index=False).agg(Sales_A=("Sales", "sum"))
+    comp_b = dfB.groupby(pivot_dim, as_index=False).agg(Sales_B=("Sales", "sum"))
+    comp = comp_a.merge(comp_b, on=pivot_dim, how="outer").fillna(0.0)
+    comp["Difference"] = comp["Sales_A"] - comp["Sales_B"]
+    comp["% Change"] = np.where(comp["Sales_B"] != 0, comp["Difference"] / comp["Sales_B"], np.nan)
+    comp = comp.sort_values("Sales_A", ascending=False)
+
+    total = pd.DataFrame(
+        [
+            {
+                pivot_dim: "Total",
+                "Sales_A": comp["Sales_A"].sum(),
+                "Sales_B": comp["Sales_B"].sum(),
+                "Difference": comp["Difference"].sum(),
+                "% Change": np.nan if comp["Sales_B"].sum() == 0 else comp["Difference"].sum() / comp["Sales_B"].sum(),
+            }
+        ]
+    )
+    comp_show = pd.concat([comp, total], ignore_index=True)
+    show = rename_ab_columns(comp_show.copy(), a_lbl, b_lbl)
+    sales_a_col = f"Sales ({a_lbl})"
+    sales_b_col = f"Sales ({b_lbl})" if b_lbl else "Sales (Comparison)"
+    show[sales_a_col] = show[sales_a_col].map(money)
+    show[sales_b_col] = show[sales_b_col].map(money)
+    show["Difference"] = show["Difference"].map(money)
+    show["% Change"] = show["% Change"].map(pct_fmt)
+    render_shaded_total_table(show[[pivot_dim, sales_a_col, sales_b_col, "Difference", "% Change"]], height=900)
+
+    st.divider()
+    st.subheader("Movers")
+
+    a = dfA.groupby("SKU", as_index=False).agg(Sales_A=("Sales", "sum"))
+    b = dfB.groupby("SKU", as_index=False).agg(Sales_B=("Sales", "sum"))
+    m = a.merge(b, on="SKU", how="outer").fillna(0.0)
+    m["Difference"] = m["Sales_A"] - m["Sales_B"]
+    m["% Change"] = np.where(m["Sales_B"] != 0, m["Difference"] / m["Sales_B"], np.nan)
+    m = m[(m["Sales_A"] >= min_sales) | (m["Sales_B"] >= min_sales)].copy()
+
+    inc = m[m["Difference"] > 0].sort_values("Difference", ascending=False).head(15).copy()
+    dec = m[m["Difference"] < 0].sort_values("Difference", ascending=True).head(15).copy()
+
+    for ddf in (inc, dec):
+        ddf.rename(columns={"Sales_A": f"Sales ({a_lbl})", "Sales_B": f"Sales ({b_lbl})"}, inplace=True)
+        ddf[f"Sales ({a_lbl})"] = ddf[f"Sales ({a_lbl})"].map(money)
+        ddf[f"Sales ({b_lbl})"] = ddf[f"Sales ({b_lbl})"].map(money)
+        ddf["Difference"] = ddf["Difference"].map(money)
+        ddf["% Change"] = ddf["% Change"].map(pct_fmt)
+
+    x, y = st.columns(2)
+    with x:
+        st.markdown("**Top Increasing**")
+        if not inc.empty:
+            render_df(inc[["SKU", f"Sales ({a_lbl})", f"Sales ({b_lbl})", "Difference", "% Change"]], height=360)
+        else:
+            st.caption("None.")
+    with y:
+        st.markdown("**Top Declining**")
+        if not dec.empty:
+            render_df(dec[["SKU", f"Sales ({a_lbl})", f"Sales ({b_lbl})", "Difference", "% Change"]], height=360)
+        else:
+            st.caption("None.")
