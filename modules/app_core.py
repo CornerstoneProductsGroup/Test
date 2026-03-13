@@ -50,7 +50,7 @@ import numpy as np
 import pandas as pd
 import streamlit as st
 
-
+from .quarter_utils import add_quarter_columns
 
 
 def style_numeric_posneg(df: pd.DataFrame, cols: list[str]):
@@ -1715,6 +1715,7 @@ def read_weekly_workbook(uploaded_file, year: int) -> pd.DataFrame:
         out["SKU"] = out["SKU"].map(_normalize_sku)
         out["StartDate"] = pd.to_datetime(out["StartDate"], errors="coerce")
         out["EndDate"] = pd.to_datetime(out["EndDate"], errors="coerce")
+        out = add_quarter_columns(out, week_column="StartDate")
     return out
 
 
@@ -1840,6 +1841,7 @@ def read_yow_workbook(uploaded_file, year: int) -> pd.DataFrame:
         out["EndDate"] = pd.to_datetime(out["EndDate"], errors="coerce")
         out["Units"] = pd.to_numeric(out["Units"], errors="coerce").fillna(0.0)
         out["UnitPrice"] = pd.to_numeric(out["UnitPrice"], errors="coerce")
+        out = add_quarter_columns(out, week_column="StartDate")
     return out
 
 # -------------------------
@@ -1852,6 +1854,7 @@ def enrich_sales(sales: pd.DataFrame, vmap: pd.DataFrame, price_hist: pd.DataFra
     s["Units"] = pd.to_numeric(s["Units"], errors="coerce").fillna(0.0).astype(float)
     s["StartDate"] = pd.to_datetime(s["StartDate"], errors="coerce")
     s["EndDate"] = pd.to_datetime(s["EndDate"], errors="coerce")
+    s = add_quarter_columns(s, week_column="StartDate")
 
     m = vmap[["Retailer","SKU","Vendor","Price","MapOrder"]].copy()
     # Normalize keys; treat blank Retailer in vendor map as wildcard ("*")
