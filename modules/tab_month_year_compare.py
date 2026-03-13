@@ -150,9 +150,9 @@ def render_visual_executive_dashboard(
 
         return bars + labels
 
-    def prep_stack_percent(df: pd.DataFrame, dim_name: str):
+    def prep_grouped_share(df: pd.DataFrame, dim_name: str):
         if df.empty:
-            return pd.DataFrame(columns=[dim_name, "Series", "Value", "SharePct", "PctLabel", "SortTotal"])
+            return pd.DataFrame(columns=[dim_name, "Series", "Value", "SharePct", "BarLabel", "SortTotal"])
 
         long_df = df[[dim_name, "Current", "Compare", "Total"]].melt(
             id_vars=[dim_name, "Total"],
@@ -162,43 +162,42 @@ def render_visual_executive_dashboard(
         )
 
         long_df["SharePct"] = np.where(long_df["Total"] > 0, long_df["Value"] / long_df["Total"], 0.0)
-        long_df["PctLabel"] = np.where(long_df["SharePct"] >= 0.06, (long_df["SharePct"] * 100).round(0).astype(int).astype(str) + "%", "")
+        long_df["BarLabel"] = long_df.apply(
+            lambda r: f'{money(r["Value"])} • {r["SharePct"]:.0%}' if r["Value"] > 0 else "",
+            axis=1,
+        )
         long_df["SortTotal"] = long_df["Total"]
         return long_df
 
-    def stacked_share_chart(long_df: pd.DataFrame, dim_name: str, title: str, height: int = 360):
+    def grouped_share_chart(long_df: pd.DataFrame, dim_name: str, height: int = 420):
         if long_df.empty:
             return None
 
-        bars = (
-            alt.Chart(long_df)
-            .mark_bar()
-            .encode(
-                y=alt.Y(f"{dim_name}:N", sort=alt.SortField(field="SortTotal", order="descending"), title=""),
-                x=alt.X("Value:Q", stack="zero", title="Sales"),
-                color=alt.Color("Series:N", title=""),
-                tooltip=[
-                    alt.Tooltip(f"{dim_name}:N", title=dim_name),
-                    alt.Tooltip("Series:N", title="Series"),
-                    alt.Tooltip("Value:Q", title="Sales", format=",.2f"),
-                    alt.Tooltip("SharePct:Q", title="% of total", format=".0%"),
-                ],
-            )
-            .properties(height=height, title=title)
+        base = alt.Chart(long_df).encode(
+            y=alt.Y(
+                f"{dim_name}:N",
+                sort=alt.SortField(field="SortTotal", order="descending"),
+                title="",
+            ),
+            yOffset=alt.YOffset("Series:N"),
+            x=alt.X("Value:Q", title="Sales"),
+            color=alt.Color("Series:N", title=""),
+            tooltip=[
+                alt.Tooltip(f"{dim_name}:N", title=dim_name),
+                alt.Tooltip("Series:N", title="Series"),
+                alt.Tooltip("Value:Q", title="Sales", format=",.2f"),
+                alt.Tooltip("SharePct:Q", title="% of row total", format=".0%"),
+            ],
         )
+
+        bars = base.mark_bar(size=18)
 
         labels = (
-            alt.Chart(long_df[long_df["PctLabel"] != ""])
-            .mark_text(baseline="middle")
-            .encode(
-                y=alt.Y(f"{dim_name}:N", sort=alt.SortField(field="SortTotal", order="descending")),
-                x=alt.X("Value:Q", stack="center"),
-                detail="Series:N",
-                text="PctLabel:N",
-            )
+            base.mark_text(align="left", dx=6)
+            .encode(text="BarLabel:N")
         )
 
-        return bars + labels
+        return (bars + labels).properties(height=height)
 
     st.markdown("### Executive Dashboard")
 
@@ -243,20 +242,20 @@ def render_visual_executive_dashboard(
 
     with left:
         st.markdown("#### Top Retailers")
-        retailer_long = prep_stack_percent(retailer, "Retailer")
+        retailer_long = prep_grouped_share(retailer, "Retailer")
         if retailer_long.empty:
             st.caption("No retailer data available.")
         else:
-            retailer_chart = stacked_share_chart(retailer_long, "Retailer", title="")
+            retailer_chart = grouped_share_chart(retailer_long, "Retailer")
             st.altair_chart(retailer_chart, use_container_width=True)
 
     with right:
         st.markdown("#### Top Vendors")
-        vendor_long = prep_stack_percent(vendor, "Vendor")
+        vendor_long = prep_grouped_share(vendor, "Vendor")
         if vendor_long.empty:
             st.caption("No vendor data available.")
         else:
-            vendor_chart = stacked_share_chart(vendor_long, "Vendor", title="")
+            vendor_chart = grouped_share_chart(vendor_long, "Vendor")
             st.altair_chart(vendor_chart, use_container_width=True)
 
     st.write("")
