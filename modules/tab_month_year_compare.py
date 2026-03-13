@@ -44,25 +44,6 @@ def render(ctx: dict):
     compare_mode = ctx["compare_mode"]
     min_sales = ctx["min_sales"]
 
-    view_mode = st.toggle(
-        "Visual executive dashboard",
-        value=False,
-        key="month_year_compare_visual_toggle",
-        help="Turn on for a cleaner chart-first executive dashboard. Turn off for the detailed table view.",
-    )
-
-    if view_mode:
-        render_visual_executive_dashboard(
-            dfA=dfA,
-            dfB=dfB,
-            kA=kA,
-            kB=kB,
-            a_lbl=a_lbl,
-            b_lbl=b_lbl,
-            min_sales=min_sales,
-        )
-        return
-
     render_standard_view(
         dfA=dfA,
         dfB=dfB,
@@ -72,6 +53,34 @@ def render(ctx: dict):
         b_lbl=b_lbl,
         compare_mode=compare_mode,
         min_sales=min_sales,
+    )
+
+
+def render_visual_only(ctx: dict):
+    st.markdown(
+        """
+        <style>
+        .kpi-card .kpi-title{font-size:13px !important;}
+        .kpi-card .kpi-value{font-size:31px !important;}
+        .kpi-card .kpi-delta{font-size:15px !important;}
+        .kpi-card .kpi-sub{font-size:15px !important;}
+        .kpi-card .top-two-item .kpi-big-name{font-size:22px !important;}
+        .kpi-card .top-two-item .kpi-value{font-size:30px !important;}
+        .kpi-card .top-two-item .kpi-delta{font-size:14px !important;}
+        .kpi-card .top-two-item .kpi-sub{font-size:14px !important;}
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
+
+    render_visual_executive_dashboard(
+        dfA=ctx["dfA"],
+        dfB=ctx["dfB"],
+        kA=ctx["kA"],
+        kB=ctx["kB"],
+        a_lbl=ctx["a_lbl"],
+        b_lbl=ctx["b_lbl"],
+        min_sales=ctx["min_sales"],
     )
 
 
@@ -562,8 +571,6 @@ def render_visual_executive_dashboard(
         )
 
         return (rules + dots + pos_delta_labels + pos_pct_labels + neg_delta_labels + neg_pct_labels).properties(height=height)
-
-    st.markdown("### Executive Dashboard")
 
     c1, c2, c3 = st.columns(3)
     with c1:
