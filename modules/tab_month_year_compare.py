@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import re
+
 import altair as alt
 import numpy as np
 import pandas as pd
@@ -22,7 +24,6 @@ def render(ctx: dict):
     st.markdown(
         """
         <style>
-        /* Month / Year Compare only */
         .kpi-card .kpi-title{font-size:13px !important;}
         .kpi-card .kpi-value{font-size:31px !important;}
         .kpi-card .kpi-delta{font-size:15px !important;}
@@ -117,13 +118,52 @@ def render_visual_executive_dashboard(
         metric: str = "Sales",
         top_n: int = 10,
     ):
-        cur = df_cur.groupby(level, as_index=False).agg(Current=(metric, "sum"))
-        cmp = df_cmp.groupby(level, as_index=False).agg(Compare=(metric, "sum"))
+        cur = df_cur.groupby(level, dropna=False, as_index=False).agg(Current=(metric, "sum"))
+        cmp = df_cmp.groupby(level, dropna=False, as_index=False).agg(Compare=(metric, "sum"))
         out = cur.merge(cmp, on=level, how="outer").fillna(0.0)
+        out[level] = out[level].astype(str)
         out["Delta"] = out["Current"] - out["Compare"]
         out["Total"] = out["Current"] + out["Compare"]
         out = out.sort_values(["Total", level], ascending=[False, True]).head(top_n).copy()
         return out
+
+    def parse_month_from_text_series(s: pd.Series) -> pd.Series:
+        txt = s.astype(str).str.strip().str.lower()
+
+        month_map = {
+            "jan": 1, "january": 1,
+            "feb": 2, "february": 2,
+            "mar": 3, "march": 3,
+            "apr": 4, "april": 4,
+            "may": 5,
+            "jun": 6, "june": 6,
+            "jul": 7, "july": 7,
+            "aug": 8, "august": 8,
+            "sep": 9, "sept": 9, "september": 9,
+            "oct": 10, "october": 10,
+            "nov": 11, "november": 11,
+            "dec": 12, "december": 12,
+        }
+
+        found = pd.Series(np.nan, index=s.index, dtype="float64")
+        for key, val in month_map.items():
+            mask = txt.str.contains(rf"\b{re.escape(key)}\b", regex=True, na=False)
+            found = found.where(~mask, val)
+
+        if found.notna().any():
+            return found
+
+        dt = pd.to_datetime(s, errors="coerce")
+        if dt.notna().any():
+            return dt.dt.month.astype("float64")
+
+        mmdd = txt.str.extract(r"(?P<m>\d{1,2})[/-](?P<d>\d{1,2})(?:[/-](?P<y>\d{2,4}))?")
+        if not mmdd.empty:
+            m = pd.to_numeric(mmdd["m"], errors="coerce")
+            if m.notna().any():
+                return m.astype("float64")
+
+        return found
 
     def infer_quarter_series(df: pd.DataFrame) -> pd.Series | None:
         cols = {str(c).strip().lower(): c for c in df.columns}
@@ -132,51 +172,57 @@ def render_visual_executive_dashboard(
             if cand in cols:
                 s = df[cols[cand]].astype(str).str.upper().str.replace(" ", "", regex=False)
                 s = s.replace({"1": "Q1", "2": "Q2", "3": "Q3", "4": "Q4"})
-                return s.where(s.isin(Q_DOMAIN))
+                s = s.where(s.isin(Q_DOMAIN))
+                if s.notna().any():
+                    return s
 
         month_num = None
 
-        for cand in ["monthnum", "month_num", "month number", "month"]:
+        for cand in ["monthnum", "month_num", "month number"]:
             if cand in cols:
-                raw = df[cols[cand]]
-                if pd.api.types.is_numeric_dtype(raw):
-                    month_num = pd.to_numeric(raw, errors="coerce")
-                    break
-                month_map = {
-                    "jan": 1, "january": 1,
-                    "feb": 2, "february": 2,
-                    "mar": 3, "march": 3,
-                    "apr": 4, "april": 4,
-                    "may": 5,
-                    "jun": 6, "june": 6,
-                    "jul": 7, "july": 7,
-                    "aug": 8, "august": 8,
-                    "sep": 9, "sept": 9, "september": 9,
-                    "oct": 10, "october": 10,
-                    "nov": 11, "november": 11,
-                    "dec": 12, "december": 12,
-                }
-                tmp = raw.astype(str).str.strip().str.lower().map(month_map)
-                if tmp.notna().any():
-                    month_num = pd.to_numeric(tmp, errors="coerce")
+                raw = pd.to_numeric(df[cols[cand]], errors="coerce")
+                if raw.notna().any():
+                    month_num = raw
                     break
 
+        if month_num is None and "month" in cols:
+            raw = df[cols["month"]]
+            if pd.api.types.is_numeric_dtype(raw):
+                raw = pd.to_numeric(raw, errors="coerce")
+                if raw.notna().any():
+                    month_num = raw
+            if month_num is None:
+                raw_txt = parse_month_from_text_series(raw)
+                if raw_txt.notna().any():
+                    month_num = raw_txt
+
         if month_num is None:
-            for cand in [
-                "date", "week ending", "week_end", "week end date",
-                "week ending date", "invoice date", "ship date"
-            ]:
+            week_candidates = [
+                "week",
+                "week ending",
+                "week ending date",
+                "week end",
+                "week end date",
+                "week_ending",
+                "week_end",
+                "date",
+                "reporting week",
+                "week label",
+            ]
+            for cand in week_candidates:
                 if cand in cols:
-                    dt = pd.to_datetime(df[cols[cand]], errors="coerce")
-                    if dt.notna().any():
-                        month_num = dt.dt.month
+                    parsed = parse_month_from_text_series(df[cols[cand]])
+                    if parsed.notna().any():
+                        month_num = parsed
                         break
 
         if month_num is None:
             return None
 
         q = (((month_num - 1) // 3) + 1).map({1: "Q1", 2: "Q2", 3: "Q3", 4: "Q4"})
-        return q
+        if q.notna().any():
+            return q
+        return None
 
     def prep_quarter_stacked(df_cur: pd.DataFrame, df_cmp: pd.DataFrame, metric: str):
         cur_q = infer_quarter_series(df_cur)
@@ -239,7 +285,7 @@ def render_visual_executive_dashboard(
                     x=alt.X("Value:Q", title=metric_name, scale=alt.Scale(domain=[0, xmax])),
                     color=color_enc,
                 )
-                .properties(height=160)
+                .properties(height=150)
             )
 
             labels = (
@@ -254,11 +300,6 @@ def render_visual_executive_dashboard(
             )
 
             return bars + labels
-
-        totals = stacked.groupby("Period", as_index=False)["Value"].sum().rename(columns={"Value": "Total"})
-        stacked = stacked.merge(totals, on="Period", how="left")
-        stacked["Quarter"] = pd.Categorical(stacked["Quarter"], categories=Q_DOMAIN, ordered=True)
-        stacked = stacked.sort_values(["Period", "Quarter"]).copy()
 
         bars = (
             alt.Chart(stacked)
@@ -300,7 +341,7 @@ def render_visual_executive_dashboard(
 
     def prep_grouped_share(df: pd.DataFrame, dim_name: str):
         if df.empty:
-            return pd.DataFrame(columns=[dim_name, "Series", "Value", "SharePct", "Label", "SortTotal"])
+            return pd.DataFrame(columns=[dim_name, "Series", "Value", "SharePct", "Label", "SortTotal", "Start"])
 
         long_df = df[[dim_name, "Current", "Compare", "Total"]].melt(
             id_vars=[dim_name, "Total"],
@@ -316,6 +357,7 @@ def render_visual_executive_dashboard(
             axis=1,
         )
         long_df["SortTotal"] = long_df["Total"]
+        long_df["Start"] = 0.0
         return long_df
 
     def grouped_lollipop_chart(long_df: pd.DataFrame, dim_name: str, height: int = 470):
@@ -357,8 +399,8 @@ def render_visual_executive_dashboard(
             .encode(
                 y=y_enc,
                 yOffset=yoff_enc,
-                x=alt.value(0),
-                x2=alt.X2("Value:Q"),
+                x=alt.X("Start:Q", scale=alt.Scale(domain=[0, xmax], nice=True), title="Sales"),
+                x2="Value:Q",
                 color=color_enc,
             )
         )
@@ -369,7 +411,7 @@ def render_visual_executive_dashboard(
             .encode(
                 y=y_enc,
                 yOffset=yoff_enc,
-                x=alt.X("Value:Q", title="Sales", scale=alt.Scale(domain=[0, xmax], nice=True)),
+                x=alt.X("Value:Q", scale=alt.Scale(domain=[0, xmax], nice=True), title="Sales"),
                 color=color_enc,
                 tooltip=[
                     alt.Tooltip(f"{dim_name}:N", title=dim_name),
@@ -403,6 +445,8 @@ def render_visual_executive_dashboard(
 
         inc = sku.sort_values(["Delta", "SKU"], ascending=[False, True]).head(10).copy()
         dec = sku.sort_values(["Delta", "SKU"], ascending=[True, True]).head(10).copy()
+        inc["Start"] = 0.0
+        dec["Start"] = 0.0
         return inc, dec
 
     def mover_lollipop_chart(df: pd.DataFrame, metric_title: str, positive: bool, height: int = 360):
@@ -433,8 +477,8 @@ def render_visual_executive_dashboard(
             .mark_rule(strokeWidth=2, color=color)
             .encode(
                 y=alt.Y("SKU:N", sort=order, title=""),
-                x=alt.value(0),
-                x2=alt.X2("Delta:Q"),
+                x=alt.X("Start:Q", scale=x_scale, title=metric_title),
+                x2="Delta:Q",
             )
         )
 
@@ -443,7 +487,7 @@ def render_visual_executive_dashboard(
             .mark_circle(size=120, color=color)
             .encode(
                 y=alt.Y("SKU:N", sort=order, title=""),
-                x=alt.X("Delta:Q", title=metric_title, scale=x_scale),
+                x=alt.X("Delta:Q", scale=x_scale, title=metric_title),
                 tooltip=[
                     alt.Tooltip("SKU:N", title="SKU"),
                     alt.Tooltip("Current:Q", title=a_lbl, format=",.2f"),
@@ -467,7 +511,7 @@ def render_visual_executive_dashboard(
 
     def prep_contrib(df: pd.DataFrame):
         if df.empty:
-            return pd.DataFrame(columns=["Retailer", "Current", "Compare", "Delta", "ContribPct", "PctLabel", "DeltaLabel", "BarColor"])
+            return pd.DataFrame(columns=["Retailer", "Current", "Compare", "Delta", "ContribPct", "PctLabel", "DeltaLabel", "BarColor", "Start"])
 
         out = df.copy().sort_values("Delta", ascending=False).copy()
         denom = float(out["Delta"].abs().sum())
@@ -475,6 +519,7 @@ def render_visual_executive_dashboard(
         out["PctLabel"] = (out["ContribPct"] * 100).round(0).astype(int).astype(str) + "%"
         out["DeltaLabel"] = out["Delta"].map(money)
         out["BarColor"] = np.where(out["Delta"] >= 0, POSITIVE_BAR, NEGATIVE_BAR)
+        out["Start"] = 0.0
         return out
 
     def contrib_lollipop_chart(df: pd.DataFrame, height: int = 470):
@@ -493,8 +538,8 @@ def render_visual_executive_dashboard(
             .mark_rule(strokeWidth=2)
             .encode(
                 y=alt.Y("Retailer:N", sort=order, title=""),
-                x=alt.value(0),
-                x2=alt.X2("Delta:Q"),
+                x=alt.X("Start:Q", scale=x_scale, title="Sales Delta"),
+                x2="Delta:Q",
                 color=alt.Color("BarColor:N", scale=None, legend=None),
             )
         )
@@ -504,7 +549,7 @@ def render_visual_executive_dashboard(
             .mark_circle(size=120)
             .encode(
                 y=alt.Y("Retailer:N", sort=order, title=""),
-                x=alt.X("Delta:Q", title="Sales Delta", scale=x_scale),
+                x=alt.X("Delta:Q", scale=x_scale, title="Sales Delta"),
                 color=alt.Color("BarColor:N", scale=None, legend=None),
                 tooltip=[
                     alt.Tooltip("Retailer:N", title="Retailer"),
