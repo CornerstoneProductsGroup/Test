@@ -169,17 +169,26 @@ def render_visual_executive_dashboard(
         long_df["SortTotal"] = long_df["Total"]
         return long_df
 
-    def grouped_share_chart(long_df: pd.DataFrame, dim_name: str, height: int = 420):
+    def grouped_share_chart(long_df: pd.DataFrame, dim_name: str, height: int = 470):
         if long_df.empty:
             return None
 
+        y_enc = alt.Y(
+            f"{dim_name}:N",
+            sort=alt.SortField(field="SortTotal", order="descending"),
+            title="",
+            scale=alt.Scale(paddingInner=0.32, paddingOuter=0.14),
+        )
+
+        yoff_enc = alt.YOffset(
+            "Series:N",
+            sort=[a_lbl if a_lbl in long_df["Series"].values else "Current", b_lbl if b_lbl in long_df["Series"].values else "Compare"],
+            scale=alt.Scale(paddingInner=0.18),
+        )
+
         base = alt.Chart(long_df).encode(
-            y=alt.Y(
-                f"{dim_name}:N",
-                sort=alt.SortField(field="SortTotal", order="descending"),
-                title="",
-            ),
-            yOffset=alt.YOffset("Series:N"),
+            y=y_enc,
+            yOffset=yoff_enc,
             x=alt.X("Value:Q", title="Sales"),
             color=alt.Color("Series:N", title=""),
             tooltip=[
@@ -190,7 +199,7 @@ def render_visual_executive_dashboard(
             ],
         )
 
-        bars = base.mark_bar(size=18)
+        bars = base.mark_bar(size=14)
 
         labels = (
             base.mark_text(align="left", dx=6)
@@ -198,6 +207,84 @@ def render_visual_executive_dashboard(
         )
 
         return (bars + labels).properties(height=height)
+
+    def prep_sku_movers():
+        sA = dfA.groupby("SKU", as_index=False).agg(Current=("Sales", "sum"))
+        sB = dfB.groupby("SKU", as_index=False).agg(Compare=("Sales", "sum"))
+        sku = sA.merge(sB, on="SKU", how="outer").fillna(0.0)
+        sku["Delta"] = sku["Current"] - sku["Compare"]
+        sku = sku[(sku["Current"] >= min_sales) | (sku["Compare"] >= min_sales)].copy()
+
+        inc = sku.sort_values(["Delta", "SKU"], ascending=[False, True]).head(10).copy()
+        dec = sku.sort_values(["Delta", "SKU"], ascending=[True, True]).head(10).copy()
+        return inc, dec
+
+    def mover_chart(df: pd.DataFrame, metric_title: str, positive: bool, height: int = 360):
+        if df.empty:
+            return None
+
+        df = df.copy()
+        df["DeltaLabel"] = df["Delta"].map(money)
+
+        if positive:
+            order = alt.SortField(field="Delta", order="descending")
+        else:
+            order = alt.SortField(field="Delta", order="ascending")
+
+        base = alt.Chart(df).encode(
+            y=alt.Y("SKU:N", sort=order, title=""),
+            x=alt.X("Delta:Q", title=metric_title),
+            tooltip=[
+                alt.Tooltip("SKU:N", title="SKU"),
+                alt.Tooltip("Current:Q", title=a_lbl, format=",.2f"),
+                alt.Tooltip("Compare:Q", title=b_lbl, format=",.2f"),
+                alt.Tooltip("Delta:Q", title="Change", format=",.2f"),
+            ],
+        )
+
+        bars = base.mark_bar()
+
+        labels = base.mark_text(align="left", dx=6).encode(text="DeltaLabel:N")
+
+        return (bars + labels).properties(height=height)
+
+    def prep_contrib(df: pd.DataFrame):
+        if df.empty:
+            return pd.DataFrame(columns=["Retailer", "Current", "Compare", "Delta", "ContribPct", "PctLabel"])
+
+        out = df.copy()
+        denom = float(out["Delta"].abs().sum())
+        out["ContribPct"] = np.where(denom > 0, out["Delta"].abs() / denom, 0.0)
+        out["PctLabel"] = (out["ContribPct"] * 100).round(0).astype(int).astype(str) + "%"
+        out["DeltaLabel"] = out["Delta"].map(money)
+        return out
+
+    def contrib_chart(df: pd.DataFrame, height: int = 440):
+        if df.empty:
+            return None
+
+        base = alt.Chart(df).encode(
+            y=alt.Y("Retailer:N", sort=alt.SortField(field="Delta", order="descending"), title=""),
+            x=alt.X("Delta:Q", title="Sales Delta"),
+            tooltip=[
+                alt.Tooltip("Retailer:N", title="Retailer"),
+                alt.Tooltip("Current:Q", title=a_lbl, format=",.2f"),
+                alt.Tooltip("Compare:Q", title=b_lbl, format=",.2f"),
+                alt.Tooltip("Delta:Q", title="Delta", format=",.2f"),
+                alt.Tooltip("ContribPct:Q", title="% of total change", format=".0%"),
+            ],
+        )
+
+        bars = base.mark_bar()
+
+        delta_labels = base.mark_text(dx=6, align="left").encode(text="DeltaLabel:N")
+
+        pct_labels = (
+            base.mark_text(dx=6, dy=13, align="left")
+            .encode(text="PctLabel:N")
+        )
+
+        return (bars + delta_labels + pct_labels).properties(height=height)
 
     st.markdown("### Executive Dashboard")
 
@@ -214,7 +301,7 @@ def render_visual_executive_dashboard(
     sales_col, units_col = st.columns(2)
 
     with sales_col:
-        st.markdown("#### Sales")
+        st.markdown(f"#### Sales Totals ({a_lbl} vs {b_lbl})")
         sales_chart = metric_bar_chart(
             metric_name="Sales",
             cur_val=float(kA["Sales"]),
@@ -225,7 +312,7 @@ def render_visual_executive_dashboard(
         st.altair_chart(sales_chart, use_container_width=True)
 
     with units_col:
-        st.markdown("#### Units")
+        st.markdown(f"#### Units Totals ({a_lbl} vs {b_lbl})")
         units_chart = metric_bar_chart(
             metric_name="Units",
             cur_val=float(kA["Units"]),
@@ -260,14 +347,32 @@ def render_visual_executive_dashboard(
 
     st.write("")
 
-    sA = dfA.groupby("SKU", as_index=False).agg(Current=("Sales", "sum"))
-    sB = dfB.groupby("SKU", as_index=False).agg(Compare=("Sales", "sum"))
-    sku = sA.merge(sB, on="SKU", how="outer").fillna(0.0)
-    sku["Delta"] = sku["Current"] - sku["Compare"]
-    sku = sku[(sku["Current"] >= min_sales) | (sku["Compare"] >= min_sales)].copy()
+    inc, dec = prep_sku_movers()
 
-    inc = sku.sort_values(["Delta", "SKU"], ascending=[False, True]).head(10).copy()
-    dec = sku.sort_values(["Delta", "SKU"], ascending=[True, True]).head(10).copy()
+    best_inc = inc.iloc[0] if not inc.empty else None
+    best_dec = dec.iloc[0] if not dec.empty else None
+
+    m1, m2 = st.columns(2)
+    with m1:
+        if best_inc is not None:
+            kpi_card(
+                "Biggest SKU Increase",
+                str(best_inc["SKU"]),
+                f'{money(float(best_inc["Delta"]))} vs {b_lbl}',
+            )
+        else:
+            kpi_card("Biggest SKU Increase", "None", "")
+    with m2:
+        if best_dec is not None:
+            kpi_card(
+                "Biggest SKU Decrease",
+                str(best_dec["SKU"]),
+                f'{money(float(best_dec["Delta"]))} vs {b_lbl}',
+            )
+        else:
+            kpi_card("Biggest SKU Decrease", "None", "")
+
+    st.write("")
 
     left2, right2 = st.columns(2)
 
@@ -276,21 +381,7 @@ def render_visual_executive_dashboard(
         if inc.empty:
             st.caption("No increasing SKUs found.")
         else:
-            inc_chart = (
-                alt.Chart(inc)
-                .mark_bar()
-                .encode(
-                    y=alt.Y("SKU:N", sort="-x", title=""),
-                    x=alt.X("Delta:Q", title="Sales Change"),
-                    tooltip=[
-                        alt.Tooltip("SKU:N", title="SKU"),
-                        alt.Tooltip("Current:Q", title=a_lbl, format=",.2f"),
-                        alt.Tooltip("Compare:Q", title=b_lbl, format=",.2f"),
-                        alt.Tooltip("Delta:Q", title="Change", format=",.2f"),
-                    ],
-                )
-                .properties(height=360)
-            )
+            inc_chart = mover_chart(inc, "Sales Change", positive=True, height=360)
             st.altair_chart(inc_chart, use_container_width=True)
 
     with right2:
@@ -298,44 +389,18 @@ def render_visual_executive_dashboard(
         if dec.empty:
             st.caption("No declining SKUs found.")
         else:
-            dec_chart = (
-                alt.Chart(dec)
-                .mark_bar()
-                .encode(
-                    y=alt.Y("SKU:N", sort="x", title=""),
-                    x=alt.X("Delta:Q", title="Sales Change"),
-                    tooltip=[
-                        alt.Tooltip("SKU:N", title="SKU"),
-                        alt.Tooltip("Current:Q", title=a_lbl, format=",.2f"),
-                        alt.Tooltip("Compare:Q", title=b_lbl, format=",.2f"),
-                        alt.Tooltip("Delta:Q", title="Change", format=",.2f"),
-                    ],
-                )
-                .properties(height=360)
-            )
+            dec_chart = mover_chart(dec, "Sales Change", positive=False, height=360)
             st.altair_chart(dec_chart, use_container_width=True)
 
     st.write("")
 
     driver_r = prep_compare_metric(dfA, dfB, "Retailer", metric="Sales", top_n=12).sort_values("Delta", ascending=False)
+    driver_r = prep_contrib(driver_r)
+
     if not driver_r.empty:
         st.markdown("#### Retailer Contribution to Change")
-        contrib_chart = (
-            alt.Chart(driver_r)
-            .mark_bar()
-            .encode(
-                y=alt.Y("Retailer:N", sort="-x", title=""),
-                x=alt.X("Delta:Q", title="Sales Delta"),
-                tooltip=[
-                    alt.Tooltip("Retailer:N", title="Retailer"),
-                    alt.Tooltip("Current:Q", title=a_lbl, format=",.2f"),
-                    alt.Tooltip("Compare:Q", title=b_lbl, format=",.2f"),
-                    alt.Tooltip("Delta:Q", title="Delta", format=",.2f"),
-                ],
-            )
-            .properties(height=420)
-        )
-        st.altair_chart(contrib_chart, use_container_width=True)
+        rc_chart = contrib_chart(driver_r, height=440)
+        st.altair_chart(rc_chart, use_container_width=True)
 
 
 def render_standard_view(
