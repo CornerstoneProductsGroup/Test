@@ -89,7 +89,6 @@ def render_visual_executive_dashboard(
     PERIOD_RANGE = ["#1f77b4", "#ff7f0e"]
     POSITIVE_BAR = "#2e7d32"
     NEGATIVE_BAR = "#c62828"
-    CONTRIBUTION_BAR = "#1f77b4"
 
     def pct_change(cur: float, prev: float):
         if prev == 0:
@@ -326,33 +325,34 @@ def render_visual_executive_dashboard(
 
     def prep_contrib(df: pd.DataFrame):
         if df.empty:
-            return pd.DataFrame(columns=["Retailer", "Current", "Compare", "Delta", "ContribPct", "PctLabel"])
+            return pd.DataFrame(columns=["Retailer", "Current", "Compare", "Delta", "ContribPct", "PctLabel", "DeltaLabel", "BarColor"])
 
         out = df.copy()
         denom = float(out["Delta"].abs().sum())
         out["ContribPct"] = np.where(denom > 0, out["Delta"].abs() / denom, 0.0)
         out["PctLabel"] = (out["ContribPct"] * 100).round(0).astype(int).astype(str) + "%"
         out["DeltaLabel"] = out["Delta"].map(money)
+        out["BarColor"] = np.where(out["Delta"] >= 0, POSITIVE_BAR, NEGATIVE_BAR)
         return out
 
-    def contrib_chart(df: pd.DataFrame, height: int = 460):
+    def contrib_chart(df: pd.DataFrame, height: int = 470):
         if df.empty:
             return None
 
         xmax = float(df["Delta"].max()) if not df.empty else 0.0
         xmin = float(df["Delta"].min()) if not df.empty else 0.0
-        pad = max(abs(xmax), abs(xmin)) * 0.28 if max(abs(xmax), abs(xmin)) > 0 else 1.0
+        pad = max(abs(xmax), abs(xmin)) * 0.42 if max(abs(xmax), abs(xmin)) > 0 else 1.0
+
+        x_scale = alt.Scale(domain=[xmin - pad, xmax + pad], nice=True)
+        order = alt.SortField(field="Delta", order="descending")
 
         bars = (
             alt.Chart(df)
-            .mark_bar(color=CONTRIBUTION_BAR)
+            .mark_bar()
             .encode(
-                y=alt.Y("Retailer:N", sort=alt.SortField(field="Delta", order="descending"), title=""),
-                x=alt.X(
-                    "Delta:Q",
-                    title="Sales Delta",
-                    scale=alt.Scale(domain=[xmin - pad, xmax + pad], nice=True),
-                ),
+                y=alt.Y("Retailer:N", sort=order, title=""),
+                x=alt.X("Delta:Q", title="Sales Delta", scale=x_scale),
+                color=alt.Color("BarColor:N", scale=None, legend=None),
                 tooltip=[
                     alt.Tooltip("Retailer:N", title="Retailer"),
                     alt.Tooltip("Current:Q", title=a_lbl, format=",.2f"),
@@ -363,33 +363,54 @@ def render_visual_executive_dashboard(
             )
         )
 
-        delta_labels = (
-            alt.Chart(df)
-            .mark_text(dx=6, align="left", color=CONTRIBUTION_BAR, fontSize=11)
+        pos_df = df[df["Delta"] >= 0].copy()
+        neg_df = df[df["Delta"] < 0].copy()
+
+        pos_delta_labels = (
+            alt.Chart(pos_df)
+            .mark_text(dx=6, align="left", fontSize=11)
             .encode(
-                y=alt.Y("Retailer:N", sort=alt.SortField(field="Delta", order="descending"), title=""),
-                x=alt.X(
-                    "Delta:Q",
-                    scale=alt.Scale(domain=[xmin - pad, xmax + pad], nice=True),
-                ),
+                y=alt.Y("Retailer:N", sort=order, title=""),
+                x=alt.X("Delta:Q", scale=x_scale),
                 text="DeltaLabel:N",
+                color=alt.Color("BarColor:N", scale=None, legend=None),
             )
         )
 
-        pct_labels = (
-            alt.Chart(df)
-            .mark_text(dx=6, dy=13, align="left", color=CONTRIBUTION_BAR, fontSize=11)
+        pos_pct_labels = (
+            alt.Chart(pos_df)
+            .mark_text(dx=6, dy=13, align="left", fontSize=11)
             .encode(
-                y=alt.Y("Retailer:N", sort=alt.SortField(field="Delta", order="descending"), title=""),
-                x=alt.X(
-                    "Delta:Q",
-                    scale=alt.Scale(domain=[xmin - pad, xmax + pad], nice=True),
-                ),
+                y=alt.Y("Retailer:N", sort=order, title=""),
+                x=alt.X("Delta:Q", scale=x_scale),
                 text="PctLabel:N",
+                color=alt.Color("BarColor:N", scale=None, legend=None),
             )
         )
 
-        return (bars + delta_labels + pct_labels).properties(height=height)
+        neg_delta_labels = (
+            alt.Chart(neg_df)
+            .mark_text(dx=-6, align="right", fontSize=11)
+            .encode(
+                y=alt.Y("Retailer:N", sort=order, title=""),
+                x=alt.X("Delta:Q", scale=x_scale),
+                text="DeltaLabel:N",
+                color=alt.Color("BarColor:N", scale=None, legend=None),
+            )
+        )
+
+        neg_pct_labels = (
+            alt.Chart(neg_df)
+            .mark_text(dx=-6, dy=13, align="right", fontSize=11)
+            .encode(
+                y=alt.Y("Retailer:N", sort=order, title=""),
+                x=alt.X("Delta:Q", scale=x_scale),
+                text="PctLabel:N",
+                color=alt.Color("BarColor:N", scale=None, legend=None),
+            )
+        )
+
+        return (bars + pos_delta_labels + pos_pct_labels + neg_delta_labels + neg_pct_labels).properties(height=height)
 
     st.markdown("### Executive Dashboard")
 
@@ -426,6 +447,16 @@ def render_visual_executive_dashboard(
             height=320,
         )
         st.altair_chart(units_chart, use_container_width=True)
+
+    st.write("")
+
+    driver_r = prep_compare_metric(dfA, dfB, "Retailer", metric="Sales", top_n=12).sort_values("Delta", ascending=False)
+    driver_r = prep_contrib(driver_r)
+
+    if not driver_r.empty:
+        st.markdown("#### Retailer Contribution to Change")
+        rc_chart = contrib_chart(driver_r, height=470)
+        st.altair_chart(rc_chart, use_container_width=True)
 
     retailer = prep_compare_metric(dfA, dfB, "Retailer", metric="Sales", top_n=10)
     vendor = prep_compare_metric(dfA, dfB, "Vendor", metric="Sales", top_n=10)
@@ -496,16 +527,6 @@ def render_visual_executive_dashboard(
         else:
             dec_chart = mover_chart(dec, "Sales Change", positive=False, height=360)
             st.altair_chart(dec_chart, use_container_width=True)
-
-    st.write("")
-
-    driver_r = prep_compare_metric(dfA, dfB, "Retailer", metric="Sales", top_n=12).sort_values("Delta", ascending=False)
-    driver_r = prep_contrib(driver_r)
-
-    if not driver_r.empty:
-        st.markdown("#### Retailer Contribution to Change")
-        rc_chart = contrib_chart(driver_r, height=460)
-        st.altair_chart(rc_chart, use_container_width=True)
 
 
 def render_standard_view(
