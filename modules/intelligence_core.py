@@ -80,6 +80,13 @@ def render_current_analysis_view(ctx: dict):
 def render_visual_analysis_view(ctx: dict):
     analysis_view = ctx.get("analysis_view")
 
+    if analysis_view == "Standard Intelligence":
+        if hasattr(tab_standard_intelligence, "render_visual_only"):
+            tab_standard_intelligence.render_visual_only(ctx)
+            return
+        st.warning("Standard Intelligence visual dashboard function was not found.")
+        return
+
     if analysis_view == "Month / Year Compare":
         if hasattr(tab_month_year_compare, "render_visual_only"):
             tab_month_year_compare.render_visual_only(ctx)
@@ -107,9 +114,7 @@ def render_visual_analysis_view(ctx: dict):
         st.warning("Multi Month / Year visual dashboard function was not found.")
         return
 
-    if analysis_view == "Standard Intelligence":
-        st.info("Visual Analytics is not built yet for Standard Intelligence.")
-    elif analysis_view == "Lookup Center":
+    if analysis_view == "Lookup Center":
         st.info("Visual Analytics is not built yet for Lookup Center.")
 
 
