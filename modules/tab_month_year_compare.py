@@ -85,8 +85,11 @@ def render_visual_executive_dashboard(
     b_lbl: str,
     min_sales: float,
 ):
-    SERIES_COLORS = [a_lbl, b_lbl]
-    SERIES_RANGE = ["#1f77b4", "#ff7f0e"]
+    PERIOD_DOMAIN = [a_lbl, b_lbl]
+    PERIOD_RANGE = ["#1f77b4", "#ff7f0e"]
+    POSITIVE_BAR = "#2e7d32"
+    NEGATIVE_BAR = "#c62828"
+    CONTRIBUTION_BAR = "#1f77b4"
 
     def pct_change(cur: float, prev: float):
         if prev == 0:
@@ -130,12 +133,19 @@ def render_visual_executive_dashboard(
         ymax = float(chart_df["Value"].max()) if not chart_df.empty else 0.0
         ymax = ymax * 1.18 if ymax > 0 else 1.0
 
+        color_enc = alt.Color(
+            "Period:N",
+            scale=alt.Scale(domain=PERIOD_DOMAIN, range=PERIOD_RANGE),
+            legend=None,
+        )
+
         bars = (
             alt.Chart(chart_df)
             .mark_bar(cornerRadiusTopLeft=4, cornerRadiusTopRight=4)
             .encode(
                 x=alt.X("Period:N", title=""),
                 y=alt.Y("Value:Q", title=metric_name, scale=alt.Scale(domain=[0, ymax])),
+                color=color_enc,
                 tooltip=[
                     alt.Tooltip("Period:N", title="Period"),
                     alt.Tooltip("Value:Q", title=metric_name, format=value_format),
@@ -146,11 +156,12 @@ def render_visual_executive_dashboard(
 
         labels = (
             alt.Chart(chart_df)
-            .mark_text(dy=-8)
+            .mark_text(dy=-8, fontSize=12)
             .encode(
                 x=alt.X("Period:N"),
                 y=alt.Y("Value:Q"),
                 text=alt.Text("Value:Q", format=value_format),
+                color=color_enc,
             )
         )
 
@@ -185,14 +196,14 @@ def render_visual_executive_dashboard(
 
         color_enc = alt.Color(
             "Series:N",
-            scale=alt.Scale(domain=SERIES_COLORS, range=SERIES_RANGE),
+            scale=alt.Scale(domain=PERIOD_DOMAIN, range=PERIOD_RANGE),
             title="",
             legend=alt.Legend(orient="bottom", direction="horizontal"),
         )
 
         text_color_enc = alt.Color(
             "Series:N",
-            scale=alt.Scale(domain=SERIES_COLORS, range=SERIES_RANGE),
+            scale=alt.Scale(domain=PERIOD_DOMAIN, range=PERIOD_RANGE),
             legend=None,
         )
 
@@ -276,27 +287,40 @@ def render_visual_executive_dashboard(
         if positive:
             order = alt.SortField(field="Delta", order="descending")
             x_enc = alt.X("Delta:Q", title=metric_title, scale=alt.Scale(domain=[0, xmax], nice=True))
+            bar_color = POSITIVE_BAR
+            label_align = "left"
+            label_dx = 6
         else:
             order = alt.SortField(field="Delta", order="ascending")
             x_enc = alt.X("Delta:Q", title=metric_title, scale=alt.Scale(domain=[-xmax, 0], nice=True))
+            bar_color = NEGATIVE_BAR
+            label_align = "right"
+            label_dx = -6
 
-        base = alt.Chart(df).encode(
-            y=alt.Y("SKU:N", sort=order, title=""),
-            x=x_enc,
-            tooltip=[
-                alt.Tooltip("SKU:N", title="SKU"),
-                alt.Tooltip("Current:Q", title=a_lbl, format=",.2f"),
-                alt.Tooltip("Compare:Q", title=b_lbl, format=",.2f"),
-                alt.Tooltip("Delta:Q", title="Change", format=",.2f"),
-            ],
+        bars = (
+            alt.Chart(df)
+            .mark_bar(color=bar_color)
+            .encode(
+                y=alt.Y("SKU:N", sort=order, title=""),
+                x=x_enc,
+                tooltip=[
+                    alt.Tooltip("SKU:N", title="SKU"),
+                    alt.Tooltip("Current:Q", title=a_lbl, format=",.2f"),
+                    alt.Tooltip("Compare:Q", title=b_lbl, format=",.2f"),
+                    alt.Tooltip("Delta:Q", title="Change", format=",.2f"),
+                ],
+            )
         )
 
-        bars = base.mark_bar()
-
-        if positive:
-            labels = base.mark_text(align="left", dx=6).encode(text="DeltaLabel:N")
-        else:
-            labels = base.mark_text(align="right", dx=-6).encode(text="DeltaLabel:N")
+        labels = (
+            alt.Chart(df)
+            .mark_text(align=label_align, dx=label_dx, color=bar_color, fontSize=11)
+            .encode(
+                y=alt.Y("SKU:N", sort=order, title=""),
+                x=x_enc,
+                text="DeltaLabel:N",
+            )
+        )
 
         return (bars + labels).properties(height=height)
 
@@ -319,25 +343,51 @@ def render_visual_executive_dashboard(
         xmin = float(df["Delta"].min()) if not df.empty else 0.0
         pad = max(abs(xmax), abs(xmin)) * 0.28 if max(abs(xmax), abs(xmin)) > 0 else 1.0
 
-        base = alt.Chart(df).encode(
-            y=alt.Y("Retailer:N", sort=alt.SortField(field="Delta", order="descending"), title=""),
-            x=alt.X(
-                "Delta:Q",
-                title="Sales Delta",
-                scale=alt.Scale(domain=[xmin - pad, xmax + pad], nice=True),
-            ),
-            tooltip=[
-                alt.Tooltip("Retailer:N", title="Retailer"),
-                alt.Tooltip("Current:Q", title=a_lbl, format=",.2f"),
-                alt.Tooltip("Compare:Q", title=b_lbl, format=",.2f"),
-                alt.Tooltip("Delta:Q", title="Delta", format=",.2f"),
-                alt.Tooltip("ContribPct:Q", title="% of total change", format=".0%"),
-            ],
+        bars = (
+            alt.Chart(df)
+            .mark_bar(color=CONTRIBUTION_BAR)
+            .encode(
+                y=alt.Y("Retailer:N", sort=alt.SortField(field="Delta", order="descending"), title=""),
+                x=alt.X(
+                    "Delta:Q",
+                    title="Sales Delta",
+                    scale=alt.Scale(domain=[xmin - pad, xmax + pad], nice=True),
+                ),
+                tooltip=[
+                    alt.Tooltip("Retailer:N", title="Retailer"),
+                    alt.Tooltip("Current:Q", title=a_lbl, format=",.2f"),
+                    alt.Tooltip("Compare:Q", title=b_lbl, format=",.2f"),
+                    alt.Tooltip("Delta:Q", title="Delta", format=",.2f"),
+                    alt.Tooltip("ContribPct:Q", title="% of total change", format=".0%"),
+                ],
+            )
         )
 
-        bars = base.mark_bar()
-        delta_labels = base.mark_text(dx=6, align="left").encode(text="DeltaLabel:N")
-        pct_labels = base.mark_text(dx=6, dy=13, align="left").encode(text="PctLabel:N")
+        delta_labels = (
+            alt.Chart(df)
+            .mark_text(dx=6, align="left", color=CONTRIBUTION_BAR, fontSize=11)
+            .encode(
+                y=alt.Y("Retailer:N", sort=alt.SortField(field="Delta", order="descending"), title=""),
+                x=alt.X(
+                    "Delta:Q",
+                    scale=alt.Scale(domain=[xmin - pad, xmax + pad], nice=True),
+                ),
+                text="DeltaLabel:N",
+            )
+        )
+
+        pct_labels = (
+            alt.Chart(df)
+            .mark_text(dx=6, dy=13, align="left", color=CONTRIBUTION_BAR, fontSize=11)
+            .encode(
+                y=alt.Y("Retailer:N", sort=alt.SortField(field="Delta", order="descending"), title=""),
+                x=alt.X(
+                    "Delta:Q",
+                    scale=alt.Scale(domain=[xmin - pad, xmax + pad], nice=True),
+                ),
+                text="PctLabel:N",
+            )
+        )
 
         return (bars + delta_labels + pct_labels).properties(height=height)
 
