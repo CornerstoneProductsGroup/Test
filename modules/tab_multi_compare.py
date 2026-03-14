@@ -1260,6 +1260,10 @@ def _make_sales_asp_combo_figure(summary_df: pd.DataFrame, title: str = "Sales a
     ax1.set_ylabel("Sales")
     ax1.set_title(title, fontsize=14, fontweight="bold")
 
+    max_sales = float(np.max(sales)) if len(sales) else 0.0
+    sales_domain_max = max(max_sales * 1.22, 1.0)
+    ax1.set_ylim(0, sales_domain_max)
+
     for rect, val in zip(bars, sales):
         if val <= 0:
             continue
@@ -1274,15 +1278,26 @@ def _make_sales_asp_combo_figure(summary_df: pd.DataFrame, title: str = "Sales a
             fontweight="bold",
         )
 
-    ax2 = ax1.twinx()
-    ax2.plot(x, asp, marker="o", linewidth=2.5, color=LINE_ACCENT, label="ASP")
-    ax2.set_ylabel("ASP")
+    band_low = sales_domain_max * 0.80
+    band_high = sales_domain_max * 0.96
+    asp_min = float(np.min(asp)) if len(asp) else 0.0
+    asp_max = float(np.max(asp)) if len(asp) else 0.0
 
-    for xi, val in zip(x, asp):
+    if math.isclose(asp_min, asp_max):
+        asp_display = np.full(len(asp), (band_low + band_high) / 2.0)
+    else:
+        asp_display = band_low + ((asp - asp_min) / (asp_max - asp_min)) * (band_high - band_low)
+
+    ax2 = ax1.twinx()
+    ax2.set_ylim(0, sales_domain_max)
+    ax2.plot(x, asp_display, marker="o", linewidth=2.5, color=LINE_ACCENT, label="ASP")
+    ax2.set_yticks([])
+
+    for xi, disp_y, raw_val in zip(x, asp_display, asp):
         ax2.text(
             xi,
-            val * 1.04 if val != 0 else val + 0.05,
-            money(float(val)),
+            disp_y + (sales_domain_max * 0.04),
+            money(float(raw_val)),
             ha="center",
             va="bottom",
             fontsize=9,
@@ -1317,6 +1332,10 @@ def _make_sales_units_combo_figure(summary_df: pd.DataFrame, title: str = "Sales
     ax1.set_ylabel("Sales")
     ax1.set_title(title, fontsize=14, fontweight="bold")
 
+    max_sales = float(np.max(sales)) if len(sales) else 0.0
+    sales_domain_max = max(max_sales * 1.22, 1.0)
+    ax1.set_ylim(0, sales_domain_max)
+
     for rect, val in zip(bars, sales):
         if val <= 0:
             continue
@@ -1331,15 +1350,26 @@ def _make_sales_units_combo_figure(summary_df: pd.DataFrame, title: str = "Sales
             fontweight="bold",
         )
 
-    ax2 = ax1.twinx()
-    ax2.plot(x, units, marker="o", linewidth=2.5, color=LINE_ACCENT, label="Units")
-    ax2.set_ylabel("Units")
+    band_low = sales_domain_max * 0.80
+    band_high = sales_domain_max * 0.96
+    units_min = float(np.min(units)) if len(units) else 0.0
+    units_max = float(np.max(units)) if len(units) else 0.0
 
-    for xi, val in zip(x, units):
+    if math.isclose(units_min, units_max):
+        units_display = np.full(len(units), (band_low + band_high) / 2.0)
+    else:
+        units_display = band_low + ((units - units_min) / (units_max - units_min)) * (band_high - band_low)
+
+    ax2 = ax1.twinx()
+    ax2.set_ylim(0, sales_domain_max)
+    ax2.plot(x, units_display, marker="o", linewidth=2.5, color=LINE_ACCENT, label="Units")
+    ax2.set_yticks([])
+
+    for xi, disp_y, raw_val in zip(x, units_display, units):
         ax2.text(
             xi,
-            val * 1.04 if val != 0 else val + 0.05,
-            f"{float(val):,.0f}",
+            disp_y + (sales_domain_max * 0.04),
+            f"{float(raw_val):,.0f}",
             ha="center",
             va="bottom",
             fontsize=9,
@@ -1377,6 +1407,10 @@ def _make_avg_sales_units_per_sku_combo_figure(
     ax1.set_ylabel("Average Sales per SKU")
     ax1.set_title(title, fontsize=14, fontweight="bold")
 
+    max_sales = float(np.max(avg_sales)) if len(avg_sales) else 0.0
+    sales_domain_max = max(max_sales * 1.22, 1.0)
+    ax1.set_ylim(0, sales_domain_max)
+
     for rect, val in zip(bars, avg_sales):
         if val <= 0:
             continue
@@ -1391,15 +1425,28 @@ def _make_avg_sales_units_per_sku_combo_figure(
             fontweight="bold",
         )
 
-    ax2 = ax1.twinx()
-    ax2.plot(x, avg_units, marker="o", linewidth=2.5, color=LINE_ACCENT, label="Average Units per SKU")
-    ax2.set_ylabel("Average Units per SKU")
+    band_low = sales_domain_max * 0.80
+    band_high = sales_domain_max * 0.96
+    avg_units_min = float(np.min(avg_units)) if len(avg_units) else 0.0
+    avg_units_max = float(np.max(avg_units)) if len(avg_units) else 0.0
 
-    for xi, val in zip(x, avg_units):
+    if math.isclose(avg_units_min, avg_units_max):
+        avg_units_display = np.full(len(avg_units), (band_low + band_high) / 2.0)
+    else:
+        avg_units_display = band_low + (
+            (avg_units - avg_units_min) / (avg_units_max - avg_units_min)
+        ) * (band_high - band_low)
+
+    ax2 = ax1.twinx()
+    ax2.set_ylim(0, sales_domain_max)
+    ax2.plot(x, avg_units_display, marker="o", linewidth=2.5, color=LINE_ACCENT, label="Average Units per SKU")
+    ax2.set_yticks([])
+
+    for xi, disp_y, raw_val in zip(x, avg_units_display, avg_units):
         ax2.text(
             xi,
-            val * 1.04 if val != 0 else val + 0.05,
-            f"{float(val):,.2f}",
+            disp_y + (sales_domain_max * 0.04),
+            f"{float(raw_val):,.2f}",
             ha="center",
             va="bottom",
             fontsize=9,
@@ -1409,7 +1456,7 @@ def _make_avg_sales_units_per_sku_combo_figure(
 
     handles1, labels1 = ax1.get_legend_handles_labels()
     handles2, labels2 = ax2.get_legend_handles_labels()
-    fig.legend(handles1 + handles2, labels1 + labels2, loc="upper left", bbox_to_anchor=(0.78, 0.92), frameon=False)
+    fig.legend(handles1 + handles2, labels1 + labels2, loc="upper left", bbox_to_anchor=(0.74, 0.92), frameon=False)
     fig.tight_layout(rect=[0, 0, 0.86, 1])
     return fig
 
@@ -1581,8 +1628,6 @@ def _all_years_radar_month_df(df_hist: pd.DataFrame) -> pd.DataFrame:
     max_sales = float(out["TotalSales"].max()) if not out.empty else 0.0
     out["ScaledSales"] = out["TotalSales"] / max_sales if max_sales > 0 else 0.0
 
-    # Expand the filled data farther outward so the wedges feel larger
-    # and visually reach closer to the outer labeled ring.
     out["ScaledSalesOuter"] = 0.18 + (out["ScaledSales"] * 1.00)
     out["ScaledSalesOuter"] = out["ScaledSalesOuter"].clip(upper=1.18)
 
@@ -1608,46 +1653,78 @@ def _render_radar_altair(df: pd.DataFrame):
         st.info("No radar data available.")
         return
 
-    quarter_slices = pd.DataFrame(
+    work = df.copy()
+    work["RadarValue"] = work["ScaledSalesOuter"] if "ScaledSalesOuter" in work.columns else work["ScaledSales"]
+
+    radius_scale = alt.Scale(domain=[0, 1.35], rangeMin=0, rangeMax=320)
+
+    rings = pd.DataFrame({"r": [0.30, 0.60, 0.90, 1.20]})
+    spokes = pd.DataFrame(
         {
-            "Quarter": ["Q1", "Q2", "Q3", "Q4"],
-            "StartDeg": [0, 90, 180, 270],
-            "EndDeg": [90, 180, 270, 360],
-            "QuarterMidDeg": [45, 135, 225, 315],
-            "RadiusFull": [1.18, 1.18, 1.18, 1.18],
-            "QuarterLabelR": [1.44, 1.44, 1.44, 1.44],
+            "Month": work["Month"].tolist(),
+            "Deg": work["MidDeg"].tolist(),
+            "r0": [0.0] * len(work),
+            "r1": [1.20] * len(work),
         }
     )
 
-    rings = pd.DataFrame({"r": [0.24, 0.48, 0.72, 0.96, 1.18]})
-    radius_scale = alt.Scale(domain=[0, 1.48], rangeMin=0, rangeMax=340)
+    quarter_labels = pd.DataFrame(
+        {
+            "Quarter": ["Q1", "Q2", "Q3", "Q4"],
+            "Deg": [45, 135, 225, 315],
+            "r": [1.30, 1.30, 1.30, 1.30],
+        }
+    )
 
     ring_chart = (
         alt.Chart(rings)
-        .mark_arc(fillOpacity=0, stroke=RING_GRAY, strokeOpacity=0.55, strokeWidth=1.1)
+        .mark_arc(fillOpacity=0, stroke=RING_GRAY, strokeOpacity=0.60, strokeWidth=1.1)
         .encode(
             theta=alt.Theta(value=360),
             radius=alt.Radius("r:Q", scale=radius_scale),
         )
     )
 
-    quarter_outline = (
-        alt.Chart(quarter_slices)
-        .mark_arc(fillOpacity=0, stroke=RING_GRAY, strokeOpacity=0.95, strokeWidth=1.8)
+    spoke_chart = (
+        alt.Chart(spokes)
+        .mark_rule(stroke=RING_GRAY, strokeOpacity=0.55, strokeWidth=1.0)
         .encode(
-            theta=alt.Theta("StartDeg:Q", scale=alt.Scale(domain=[0, 360])),
-            theta2="EndDeg:Q",
-            radius=alt.Radius("RadiusFull:Q", scale=radius_scale),
+            theta=alt.Theta("Deg:Q", scale=alt.Scale(domain=[0, 360])),
+            radius=alt.Radius("r0:Q", scale=radius_scale),
+            radius2=alt.Radius2("r1:Q", scale=radius_scale),
         )
     )
 
-    month_wedges = (
-        alt.Chart(df)
-        .mark_arc(stroke=RADAR_LINE, strokeWidth=1.2, color=RADAR_FILL, opacity=0.82)
+    radar_fill = (
+        alt.Chart(work)
+        .mark_area(
+            interpolate="linear-closed",
+            color=RADAR_FILL,
+            opacity=0.28,
+            line=False,
+        )
         .encode(
-            theta=alt.Theta("StartDeg:Q", scale=alt.Scale(domain=[0, 360])),
-            theta2="EndDeg:Q",
-            radius=alt.Radius("ScaledSalesOuter:Q", scale=radius_scale),
+            theta=alt.Theta("MidDeg:Q", scale=alt.Scale(domain=[0, 360])),
+            radius=alt.Radius("RadarValue:Q", scale=radius_scale),
+            tooltip=[
+                alt.Tooltip("Quarter:N", title="Quarter"),
+                alt.Tooltip("Month:N", title="Month"),
+                alt.Tooltip("TotalSales:Q", title="Sales", format=",.2f"),
+            ],
+        )
+    )
+
+    radar_area = (
+        alt.Chart(work)
+        .mark_line(
+            interpolate="linear-closed",
+            stroke=RADAR_LINE,
+            strokeWidth=2.5,
+            point=alt.OverlayMarkDef(filled=True, size=85, color=LINE_ACCENT),
+        )
+        .encode(
+            theta=alt.Theta("MidDeg:Q", scale=alt.Scale(domain=[0, 360])),
+            radius=alt.Radius("RadarValue:Q", scale=radius_scale),
             tooltip=[
                 alt.Tooltip("Quarter:N", title="Quarter"),
                 alt.Tooltip("Month:N", title="Month"),
@@ -1657,7 +1734,7 @@ def _render_radar_altair(df: pd.DataFrame):
     )
 
     month_names = (
-        alt.Chart(df)
+        alt.Chart(work)
         .mark_text(fontSize=14, fontWeight="bold", color=TEXT_TEAL)
         .encode(
             theta=alt.Theta("MidDeg:Q", scale=alt.Scale(domain=[0, 360])),
@@ -1667,17 +1744,17 @@ def _render_radar_altair(df: pd.DataFrame):
     )
 
     quarter_names = (
-        alt.Chart(quarter_slices)
+        alt.Chart(quarter_labels)
         .mark_text(fontSize=15, fontWeight="bold", color=TEXT_AMBER)
         .encode(
-            theta=alt.Theta("QuarterMidDeg:Q", scale=alt.Scale(domain=[0, 360])),
-            radius=alt.Radius("QuarterLabelR:Q", scale=radius_scale),
+            theta=alt.Theta("Deg:Q", scale=alt.Scale(domain=[0, 360])),
+            radius=alt.Radius("r:Q", scale=radius_scale),
             text="Quarter:N",
         )
     )
 
     value_labels = (
-        alt.Chart(df)
+        alt.Chart(work)
         .mark_text(fontSize=11, color=TEXT_BLACK, fontWeight="bold")
         .encode(
             theta=alt.Theta("MidDeg:Q", scale=alt.Scale(domain=[0, 360])),
@@ -1688,8 +1765,9 @@ def _render_radar_altair(df: pd.DataFrame):
 
     chart = alt.layer(
         ring_chart,
-        quarter_outline,
-        month_wedges,
+        spoke_chart,
+        radar_fill,
+        radar_area,
         value_labels,
         month_names,
         quarter_names,
