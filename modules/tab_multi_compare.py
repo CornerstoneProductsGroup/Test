@@ -825,66 +825,6 @@ def _period_summary_df(df_vis: pd.DataFrame) -> pd.DataFrame:
     return grp
 
 
-def _render_single_metric_bar_chart(
-    summary_df: pd.DataFrame,
-    value_col: str,
-    title: str,
-    tooltip_title: str,
-    fmt: str = ",.2f",
-    height: int = 360,
-    width: int | None = None,
-):
-    if summary_df.empty or value_col not in summary_df.columns:
-        st.info("No data available.")
-        return
-
-    work = summary_df[["PeriodLabel", "SortOrder", value_col]].copy()
-    order = summary_df["PeriodLabel"].tolist()
-
-    if tooltip_title == "Average Sales per SKU":
-        work["LabelText"] = work[value_col].map(lambda v: money(float(v)))
-    elif tooltip_title == "Average Units per SKU":
-        work["LabelText"] = work[value_col].map(lambda v: f"{float(v):,.2f}")
-    else:
-        work["LabelText"] = work[value_col].map(lambda v: f"{float(v):,.2f}")
-
-    bars = (
-        alt.Chart(work)
-        .mark_bar()
-        .encode(
-            x=alt.X("PeriodLabel:N", title="Period", sort=order),
-            y=alt.Y(f"{value_col}:Q", title=tooltip_title),
-            tooltip=[
-                alt.Tooltip("PeriodLabel:N", title="Period"),
-                alt.Tooltip(f"{value_col}:Q", title=tooltip_title, format=fmt),
-            ],
-        )
-    )
-
-    text = (
-        alt.Chart(work)
-        .mark_text(dy=12, baseline="top", color=TEXT_BLACK, fontWeight="bold", fontSize=13)
-        .encode(
-            x=alt.X("PeriodLabel:N", sort=order),
-            y=alt.Y(f"{value_col}:Q"),
-            text="LabelText:N",
-        )
-    )
-
-    chart = (bars + text).properties(
-        height=height,
-        width=width,
-        title=title,
-    ).configure_title(
-        anchor="start",
-        fontSize=14,
-        offset=12,
-        color=TEXT_LIGHT,
-    )
-
-    st.altair_chart(chart, use_container_width=True)
-
-
 def _render_sales_asp_combo_chart(summary_df: pd.DataFrame):
     if summary_df.empty:
         st.info("No data available.")
@@ -1073,155 +1013,108 @@ def _render_sales_units_combo_chart(summary_df: pd.DataFrame):
     st.altair_chart(chart, use_container_width=True)
 
 
-def _annotate_bars(ax, rects, labels, fontsize: int = 8, rotation: int = 0):
-    for rect, label in zip(rects, labels):
-        height = rect.get_height()
-        if height <= 0:
-            continue
-        ax.annotate(
-            label,
-            xy=(rect.get_x() + rect.get_width() / 2, height),
-            xytext=(0, 4),
-            textcoords="offset points",
-            ha="center",
-            va="bottom",
-            fontsize=fontsize,
-            rotation=rotation,
-        )
+def _render_avg_sales_units_per_sku_combo_chart(summary_df: pd.DataFrame):
+    if summary_df.empty:
+        st.info("No data available.")
+        return
 
+    work = summary_df[["PeriodLabel", "AvgSalesPerSKU", "AvgUnitsPerSKU"]].copy()
+    order = work["PeriodLabel"].tolist()
 
-def _make_single_metric_bar_figure(
-    summary_df: pd.DataFrame,
-    value_col: str,
-    title: str,
-    label_mode: str = "money",
-):
-    fig, ax = plt.subplots(figsize=(10.0, 4.8))
+    max_sales = float(work["AvgSalesPerSKU"].max()) if not work.empty else 0.0
+    sales_domain_max = max(max_sales * 1.22, 1.0)
 
-    if summary_df.empty or value_col not in summary_df.columns:
-        ax.text(0.5, 0.5, "No data available", ha="center", va="center")
-        ax.axis("off")
-        fig.suptitle(title, fontsize=14, fontweight="bold")
-        return fig
+    band_low = sales_domain_max * 0.80
+    band_high = sales_domain_max * 0.96
 
-    labels = summary_df["PeriodLabel"].astype(str).tolist()
-    vals = pd.to_numeric(summary_df[value_col], errors="coerce").fillna(0.0).to_numpy()
-
-    x = np.arange(len(labels))
-    bars = ax.bar(x, vals)
-    ax.set_xticks(x)
-    ax.set_xticklabels(labels)
-    ax.set_title(title, fontsize=14, fontweight="bold")
-
-    if label_mode == "money":
-        txt = [money(float(v)) for v in vals]
-    elif label_mode == "int":
-        txt = [f"{float(v):,.0f}" for v in vals]
+    units_min = float(work["AvgUnitsPerSKU"].min()) if not work.empty else 0.0
+    units_max = float(work["AvgUnitsPerSKU"].max()) if not work.empty else 0.0
+    if math.isclose(units_min, units_max):
+        work["AvgUnitsDisplayY"] = (band_low + band_high) / 2.0
     else:
-        txt = [f"{float(v):,.2f}" for v in vals]
+        work["AvgUnitsDisplayY"] = band_low + (
+            (work["AvgUnitsPerSKU"] - units_min) / (units_max - units_min)
+        ) * (band_high - band_low)
 
-    _annotate_bars(ax, bars, txt, fontsize=8, rotation=0)
+    work["AvgSalesLabel"] = work["AvgSalesPerSKU"].map(lambda v: money(float(v)))
+    work["AvgUnitsLabel"] = work["AvgUnitsPerSKU"].map(lambda v: f"{float(v):,.2f}")
+    work["AvgUnitsLabelY"] = work["AvgUnitsDisplayY"] + (sales_domain_max * 0.04)
+    work["AvgSalesLabelY"] = work["AvgSalesPerSKU"] * 0.90
 
-    fig.tight_layout()
-    return fig
-
-
-def _make_sales_asp_combo_figure(summary_df: pd.DataFrame, title: str = "Sales and ASP by Selected Period"):
-    fig, ax1 = plt.subplots(figsize=(10.4, 5.2))
-
-    if summary_df.empty:
-        ax1.text(0.5, 0.5, "No data available", ha="center", va="center")
-        ax1.axis("off")
-        fig.suptitle(title, fontsize=14, fontweight="bold")
-        return fig
-
-    labels = summary_df["PeriodLabel"].astype(str).tolist()
-    sales = pd.to_numeric(summary_df["Sales"], errors="coerce").fillna(0.0).to_numpy()
-    asp = pd.to_numeric(summary_df["ASP"], errors="coerce").fillna(0.0).to_numpy()
-
-    x = np.arange(len(labels))
-    bars = ax1.bar(x, sales, width=0.55, label="Sales")
-    ax1.set_xticks(x)
-    ax1.set_xticklabels(labels)
-    ax1.set_ylabel("Sales")
-    ax1.set_title(title, fontsize=14, fontweight="bold")
-
-    for rect, val in zip(bars, sales):
-        if val <= 0:
-            continue
-        ax1.text(
-            rect.get_x() + rect.get_width() / 2,
-            rect.get_height() * 0.90,
-            money(float(val)),
-            ha="center",
-            va="top",
-            fontsize=10,
-            color="black",
-            fontweight="bold",
+    bars = (
+        alt.Chart(work)
+        .mark_bar()
+        .encode(
+            x=alt.X("PeriodLabel:N", title="Period", sort=order),
+            y=alt.Y(
+                "AvgSalesPerSKU:Q",
+                title="Average Sales per SKU",
+                scale=alt.Scale(domain=[0, sales_domain_max]),
+            ),
+            tooltip=[
+                alt.Tooltip("PeriodLabel:N", title="Period"),
+                alt.Tooltip("AvgSalesPerSKU:Q", title="Average Sales per SKU", format=",.2f"),
+                alt.Tooltip("AvgUnitsPerSKU:Q", title="Average Units per SKU", format=",.2f"),
+            ],
         )
+    )
 
-    ax2 = ax1.twinx()
-    ax2.plot(x, asp, marker="o", linewidth=2.5, color=LINE_ACCENT, label="ASP")
-    ax2.set_ylabel("ASP")
-
-    for xi, val in zip(x, asp):
-        ax2.text(xi, val * 1.04 if val != 0 else val + 0.05, money(float(val)), ha="center", va="bottom", fontsize=9, color=LINE_ACCENT, fontweight="bold")
-
-    handles1, labels1 = ax1.get_legend_handles_labels()
-    handles2, labels2 = ax2.get_legend_handles_labels()
-    fig.legend(handles1 + handles2, labels1 + labels2, loc="upper left", bbox_to_anchor=(0.84, 0.92), frameon=False)
-
-    fig.tight_layout(rect=[0, 0, 0.86, 1])
-    return fig
-
-
-def _make_sales_units_combo_figure(summary_df: pd.DataFrame, title: str = "Sales and Units by Selected Period"):
-    fig, ax1 = plt.subplots(figsize=(10.4, 5.2))
-
-    if summary_df.empty:
-        ax1.text(0.5, 0.5, "No data available", ha="center", va="center")
-        ax1.axis("off")
-        fig.suptitle(title, fontsize=14, fontweight="bold")
-        return fig
-
-    labels = summary_df["PeriodLabel"].astype(str).tolist()
-    sales = pd.to_numeric(summary_df["Sales"], errors="coerce").fillna(0.0).to_numpy()
-    units = pd.to_numeric(summary_df["Units"], errors="coerce").fillna(0.0).to_numpy()
-
-    x = np.arange(len(labels))
-    bars = ax1.bar(x, sales, width=0.55, label="Sales")
-    ax1.set_xticks(x)
-    ax1.set_xticklabels(labels)
-    ax1.set_ylabel("Sales")
-    ax1.set_title(title, fontsize=14, fontweight="bold")
-
-    for rect, val in zip(bars, sales):
-        if val <= 0:
-            continue
-        ax1.text(
-            rect.get_x() + rect.get_width() / 2,
-            rect.get_height() * 0.90,
-            money(float(val)),
-            ha="center",
-            va="top",
-            fontsize=10,
-            color="black",
-            fontweight="bold",
+    sales_text = (
+        alt.Chart(work)
+        .mark_text(color=TEXT_BLACK, fontWeight="bold", fontSize=15)
+        .encode(
+            x=alt.X("PeriodLabel:N", sort=order),
+            y=alt.Y("AvgSalesLabelY:Q", scale=alt.Scale(domain=[0, sales_domain_max])),
+            text="AvgSalesLabel:N",
         )
+    )
 
-    ax2 = ax1.twinx()
-    ax2.plot(x, units, marker="o", linewidth=2.5, color=LINE_ACCENT, label="Units")
-    ax2.set_ylabel("Units")
+    line = (
+        alt.Chart(work)
+        .mark_line(
+            point=alt.OverlayMarkDef(color=LINE_ACCENT, filled=True, size=80),
+            strokeWidth=3,
+            color=LINE_ACCENT,
+        )
+        .encode(
+            x=alt.X("PeriodLabel:N", sort=order),
+            y=alt.Y(
+                "AvgUnitsDisplayY:Q",
+                title="Average Sales per SKU",
+                scale=alt.Scale(domain=[0, sales_domain_max]),
+            ),
+            tooltip=[
+                alt.Tooltip("PeriodLabel:N", title="Period"),
+                alt.Tooltip("AvgUnitsPerSKU:Q", title="Average Units per SKU", format=",.2f"),
+            ],
+        )
+    )
 
-    for xi, val in zip(x, units):
-        ax2.text(xi, val * 1.04 if val != 0 else val + 0.05, f"{float(val):,.0f}", ha="center", va="bottom", fontsize=9, color=LINE_ACCENT, fontweight="bold")
+    units_text = (
+        alt.Chart(work)
+        .mark_text(color=LINE_ACCENT, fontWeight="bold", fontSize=13)
+        .encode(
+            x=alt.X("PeriodLabel:N", sort=order),
+            y=alt.Y("AvgUnitsLabelY:Q", scale=alt.Scale(domain=[0, sales_domain_max])),
+            text="AvgUnitsLabel:N",
+        )
+    )
 
-    handles1, labels1 = ax1.get_legend_handles_labels()
-    handles2, labels2 = ax2.get_legend_handles_labels()
-    fig.legend(handles1 + handles2, labels1 + labels2, loc="upper left", bbox_to_anchor=(0.84, 0.92), frameon=False)
+    chart = (
+        alt.layer(bars, sales_text, line, units_text)
+        .properties(
+            height=500,
+            title="Average Sales per SKU and Average Units per SKU",
+        )
+        .configure_title(
+            anchor="start",
+            fontSize=16,
+            offset=12,
+            color=TEXT_LIGHT,
+        )
+    )
 
-    fig.tight_layout(rect=[0, 0, 0.86, 1])
-    return fig
+    st.altair_chart(chart, use_container_width=True)
 
 
 def _quarterly_stacked_df(df: pd.DataFrame, metric: str) -> pd.DataFrame:
@@ -1297,6 +1190,228 @@ def _render_quarterly_stacked_altair(df: pd.DataFrame, metric: str):
     )
 
     st.altair_chart(chart, use_container_width=True)
+
+
+def _make_single_metric_bar_figure(
+    summary_df: pd.DataFrame,
+    value_col: str,
+    title: str,
+    label_mode: str = "money",
+):
+    fig, ax = plt.subplots(figsize=(10.0, 4.8))
+
+    if summary_df.empty or value_col not in summary_df.columns:
+        ax.text(0.5, 0.5, "No data available", ha="center", va="center")
+        ax.axis("off")
+        fig.suptitle(title, fontsize=14, fontweight="bold")
+        return fig
+
+    labels = summary_df["PeriodLabel"].astype(str).tolist()
+    vals = pd.to_numeric(summary_df[value_col], errors="coerce").fillna(0.0).to_numpy()
+
+    x = np.arange(len(labels))
+    bars = ax.bar(x, vals)
+    ax.set_xticks(x)
+    ax.set_xticklabels(labels)
+    ax.set_title(title, fontsize=14, fontweight="bold")
+
+    if label_mode == "money":
+        txt = [money(float(v)) for v in vals]
+    elif label_mode == "int":
+        txt = [f"{float(v):,.0f}" for v in vals]
+    else:
+        txt = [f"{float(v):,.2f}" for v in vals]
+
+    for rect, label in zip(bars, txt):
+        height = rect.get_height()
+        if height <= 0:
+            continue
+        ax.annotate(
+            label,
+            xy=(rect.get_x() + rect.get_width() / 2, height),
+            xytext=(0, 4),
+            textcoords="offset points",
+            ha="center",
+            va="bottom",
+            fontsize=8,
+        )
+
+    fig.tight_layout()
+    return fig
+
+
+def _make_sales_asp_combo_figure(summary_df: pd.DataFrame, title: str = "Sales and ASP by Selected Period"):
+    fig, ax1 = plt.subplots(figsize=(10.4, 5.2))
+
+    if summary_df.empty:
+        ax1.text(0.5, 0.5, "No data available", ha="center", va="center")
+        ax1.axis("off")
+        fig.suptitle(title, fontsize=14, fontweight="bold")
+        return fig
+
+    labels = summary_df["PeriodLabel"].astype(str).tolist()
+    sales = pd.to_numeric(summary_df["Sales"], errors="coerce").fillna(0.0).to_numpy()
+    asp = pd.to_numeric(summary_df["ASP"], errors="coerce").fillna(0.0).to_numpy()
+
+    x = np.arange(len(labels))
+    bars = ax1.bar(x, sales, width=0.55, label="Sales")
+    ax1.set_xticks(x)
+    ax1.set_xticklabels(labels)
+    ax1.set_ylabel("Sales")
+    ax1.set_title(title, fontsize=14, fontweight="bold")
+
+    for rect, val in zip(bars, sales):
+        if val <= 0:
+            continue
+        ax1.text(
+            rect.get_x() + rect.get_width() / 2,
+            rect.get_height() * 0.90,
+            money(float(val)),
+            ha="center",
+            va="top",
+            fontsize=10,
+            color="black",
+            fontweight="bold",
+        )
+
+    ax2 = ax1.twinx()
+    ax2.plot(x, asp, marker="o", linewidth=2.5, color=LINE_ACCENT, label="ASP")
+    ax2.set_ylabel("ASP")
+
+    for xi, val in zip(x, asp):
+        ax2.text(
+            xi,
+            val * 1.04 if val != 0 else val + 0.05,
+            money(float(val)),
+            ha="center",
+            va="bottom",
+            fontsize=9,
+            color=LINE_ACCENT,
+            fontweight="bold",
+        )
+
+    handles1, labels1 = ax1.get_legend_handles_labels()
+    handles2, labels2 = ax2.get_legend_handles_labels()
+    fig.legend(handles1 + handles2, labels1 + labels2, loc="upper left", bbox_to_anchor=(0.84, 0.92), frameon=False)
+    fig.tight_layout(rect=[0, 0, 0.86, 1])
+    return fig
+
+
+def _make_sales_units_combo_figure(summary_df: pd.DataFrame, title: str = "Sales and Units by Selected Period"):
+    fig, ax1 = plt.subplots(figsize=(10.4, 5.2))
+
+    if summary_df.empty:
+        ax1.text(0.5, 0.5, "No data available", ha="center", va="center")
+        ax1.axis("off")
+        fig.suptitle(title, fontsize=14, fontweight="bold")
+        return fig
+
+    labels = summary_df["PeriodLabel"].astype(str).tolist()
+    sales = pd.to_numeric(summary_df["Sales"], errors="coerce").fillna(0.0).to_numpy()
+    units = pd.to_numeric(summary_df["Units"], errors="coerce").fillna(0.0).to_numpy()
+
+    x = np.arange(len(labels))
+    bars = ax1.bar(x, sales, width=0.55, label="Sales")
+    ax1.set_xticks(x)
+    ax1.set_xticklabels(labels)
+    ax1.set_ylabel("Sales")
+    ax1.set_title(title, fontsize=14, fontweight="bold")
+
+    for rect, val in zip(bars, sales):
+        if val <= 0:
+            continue
+        ax1.text(
+            rect.get_x() + rect.get_width() / 2,
+            rect.get_height() * 0.90,
+            money(float(val)),
+            ha="center",
+            va="top",
+            fontsize=10,
+            color="black",
+            fontweight="bold",
+        )
+
+    ax2 = ax1.twinx()
+    ax2.plot(x, units, marker="o", linewidth=2.5, color=LINE_ACCENT, label="Units")
+    ax2.set_ylabel("Units")
+
+    for xi, val in zip(x, units):
+        ax2.text(
+            xi,
+            val * 1.04 if val != 0 else val + 0.05,
+            f"{float(val):,.0f}",
+            ha="center",
+            va="bottom",
+            fontsize=9,
+            color=LINE_ACCENT,
+            fontweight="bold",
+        )
+
+    handles1, labels1 = ax1.get_legend_handles_labels()
+    handles2, labels2 = ax2.get_legend_handles_labels()
+    fig.legend(handles1 + handles2, labels1 + labels2, loc="upper left", bbox_to_anchor=(0.84, 0.92), frameon=False)
+    fig.tight_layout(rect=[0, 0, 0.86, 1])
+    return fig
+
+
+def _make_avg_sales_units_per_sku_combo_figure(
+    summary_df: pd.DataFrame,
+    title: str = "Average Sales per SKU and Average Units per SKU",
+):
+    fig, ax1 = plt.subplots(figsize=(10.4, 5.2))
+
+    if summary_df.empty:
+        ax1.text(0.5, 0.5, "No data available", ha="center", va="center")
+        ax1.axis("off")
+        fig.suptitle(title, fontsize=14, fontweight="bold")
+        return fig
+
+    labels = summary_df["PeriodLabel"].astype(str).tolist()
+    avg_sales = pd.to_numeric(summary_df["AvgSalesPerSKU"], errors="coerce").fillna(0.0).to_numpy()
+    avg_units = pd.to_numeric(summary_df["AvgUnitsPerSKU"], errors="coerce").fillna(0.0).to_numpy()
+
+    x = np.arange(len(labels))
+    bars = ax1.bar(x, avg_sales, width=0.55, label="Average Sales per SKU")
+    ax1.set_xticks(x)
+    ax1.set_xticklabels(labels)
+    ax1.set_ylabel("Average Sales per SKU")
+    ax1.set_title(title, fontsize=14, fontweight="bold")
+
+    for rect, val in zip(bars, avg_sales):
+        if val <= 0:
+            continue
+        ax1.text(
+            rect.get_x() + rect.get_width() / 2,
+            rect.get_height() * 0.90,
+            money(float(val)),
+            ha="center",
+            va="top",
+            fontsize=10,
+            color="black",
+            fontweight="bold",
+        )
+
+    ax2 = ax1.twinx()
+    ax2.plot(x, avg_units, marker="o", linewidth=2.5, color=LINE_ACCENT, label="Average Units per SKU")
+    ax2.set_ylabel("Average Units per SKU")
+
+    for xi, val in zip(x, avg_units):
+        ax2.text(
+            xi,
+            val * 1.04 if val != 0 else val + 0.05,
+            f"{float(val):,.2f}",
+            ha="center",
+            va="bottom",
+            fontsize=9,
+            color=LINE_ACCENT,
+            fontweight="bold",
+        )
+
+    handles1, labels1 = ax1.get_legend_handles_labels()
+    handles2, labels2 = ax2.get_legend_handles_labels()
+    fig.legend(handles1 + handles2, labels1 + labels2, loc="upper left", bbox_to_anchor=(0.78, 0.92), frameon=False)
+    fig.tight_layout(rect=[0, 0, 0.86, 1])
+    return fig
 
 
 def _make_quarterly_stacked_figure(df: pd.DataFrame, metric: str):
@@ -1705,12 +1820,16 @@ def build_visual_analytics_pdf_bytes(
     story.append(_fig_to_rl_image(_make_sales_units_combo_figure(summary_df, "Sales and Units by Selected Period"), width_inches=9.8))
     story.append(Spacer(1, 10))
 
-    story.append(Paragraph("Average Sales per SKU", styles["Heading2"]))
-    story.append(_fig_to_rl_image(_make_single_metric_bar_figure(summary_df, "AvgSalesPerSKU", "Average Sales per SKU", label_mode="money"), width_inches=4.8))
-    story.append(Spacer(1, 8))
-
-    story.append(Paragraph("Average Units per SKU", styles["Heading2"]))
-    story.append(_fig_to_rl_image(_make_single_metric_bar_figure(summary_df, "AvgUnitsPerSKU", "Average Units per SKU", label_mode="float"), width_inches=4.8))
+    story.append(Paragraph("Average Sales per SKU and Average Units per SKU", styles["Heading2"]))
+    story.append(
+        _fig_to_rl_image(
+            _make_avg_sales_units_per_sku_combo_figure(
+                summary_df,
+                "Average Sales per SKU and Average Units per SKU",
+            ),
+            width_inches=9.8,
+        )
+    )
     story.append(Spacer(1, 10))
 
     if granularity == "Year":
@@ -1827,29 +1946,8 @@ def render_visual_only(ctx: dict):
     st.markdown("### Sales and Units by Selected Period")
     _render_sales_units_combo_chart(summary_df)
 
-    c_avg_sales, c_avg_units = st.columns(2)
-
-    with c_avg_sales:
-        _render_single_metric_bar_chart(
-            summary_df,
-            value_col="AvgSalesPerSKU",
-            title="Average Sales per SKU",
-            tooltip_title="Average Sales per SKU",
-            fmt=",.2f",
-            height=330,
-            width=320,
-        )
-
-    with c_avg_units:
-        _render_single_metric_bar_chart(
-            summary_df,
-            value_col="AvgUnitsPerSKU",
-            title="Average Units per SKU",
-            tooltip_title="Average Units per SKU",
-            fmt=",.2f",
-            height=330,
-            width=320,
-        )
+    st.markdown("### Average Sales per SKU and Average Units per SKU")
+    _render_avg_sales_units_per_sku_combo_chart(summary_df)
 
     if granularity == "Year":
         st.markdown("### Quarterly Stacked Bars")
