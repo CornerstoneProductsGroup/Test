@@ -13,7 +13,6 @@ from reportlab.lib.styles import getSampleStyleSheet
 from reportlab.lib.units import inch
 from reportlab.platypus import (
     Image as RLImage,
-    PageBreak,
     Paragraph,
     SimpleDocTemplate,
     Spacer,
@@ -781,77 +780,130 @@ def _prepare_visual_base(df_scope: pd.DataFrame, labels: list[str], granularity:
     return df
 
 
-def _pie_chart_df(df: pd.DataFrame, metric: str) -> pd.DataFrame:
-    if df.empty or metric not in df.columns:
-        return pd.DataFrame(columns=["PeriodLabel", "Value", "Pct"])
-
-    out = (
-        df.groupby("PeriodLabel", as_index=False)[metric]
-        .sum()
-        .rename(columns={metric: "Value"})
-    )
-
-    total = float(out["Value"].sum()) if not out.empty else 0.0
-    out["Pct"] = np.where(total > 0, out["Value"] / total, 0.0)
-
-    order_map = {lbl: i for i, lbl in enumerate(df["PeriodLabel"].drop_duplicates().tolist())}
-    out["SortOrder"] = out["PeriodLabel"].map(order_map)
-    out = out.sort_values(["SortOrder", "PeriodLabel"]).reset_index(drop=True)
-    out["PctLabel"] = out["Pct"].map(lambda v: f"{float(v):.1%}")
-    return out
-
-
-def _render_pie_chart(df: pd.DataFrame, metric: str, title: str):
-    if df.empty:
-        st.info(f"No {metric.lower()} pie data available.")
-        return
-
-    order_list = df["PeriodLabel"].tolist()
-
-    chart = (
-        alt.Chart(df)
-        .mark_arc(outerRadius=150, innerRadius=35)
-        .encode(
-            theta=alt.Theta("Value:Q", stack=True),
-            color=alt.Color("PeriodLabel:N", title="", sort=order_list),
-            order=alt.Order("SortOrder:Q", sort="ascending"),
-            tooltip=[
-                alt.Tooltip("PeriodLabel:N", title="Period"),
-                alt.Tooltip("Value:Q", title=metric, format=",.2f" if metric == "Sales" else ",.0f"),
-                alt.Tooltip("Pct:Q", title="% of total", format=".1%"),
-            ],
+def _period_summary_df(df_vis: pd.DataFrame) -> pd.DataFrame:
+    if df_vis.empty:
+        return pd.DataFrame(
+            columns=[
+                "PeriodLabel",
+                "Sales",
+                "Units",
+                "ASP",
+                "AvgUnitsPerSKU",
+                "AvgSalesPerSKU",
+                "SKUs",
+            ]
         )
-        .properties(title=title, height=380)
-    )
 
-    pct_text = (
-        alt.Chart(df)
-        .mark_text(size=13, fontWeight="bold", color="white")
-        .encode(
-            theta=alt.Theta("Value:Q", stack=True),
-            radius=alt.value(92),
-            order=alt.Order("SortOrder:Q", sort="ascending"),
-            text="PctLabel:N",
+    grp = (
+        df_vis.groupby("PeriodLabel", as_index=False)
+        .agg(
+            Sales=("Sales", "sum"),
+            Units=("Units", "sum"),
+            SKUs=("SKU", pd.Series.nunique),
         )
+        .copy()
     )
 
-    year_text = (
-        alt.Chart(df)
-        .mark_text(size=11)
-        .encode(
-            theta=alt.Theta("Value:Q", stack=True),
-            radius=alt.value(186),
-            order=alt.Order("SortOrder:Q", sort="ascending"),
-            text="PeriodLabel:N",
+    grp["SKUs"] = pd.to_numeric(grp["SKUs"], errors="coerce").fillna(0.0)
+    grp["ASP"] = np.where(grp["Units"] != 0, grp["Sales"] / grp["Units"], 0.0)
+    grp["AvgUnitsPerSKU"] = np.where(grp["SKUs"] != 0, grp["Units"] / grp["SKUs"], 0.0)
+    grp["AvgSalesPerSKU"] = np.where(grp["SKUs"] != 0, grp["Sales"] / grp["SKUs"], 0.0)
+
+    order_map = {lbl: i for i, lbl in enumerate(df_vis["PeriodLabel"].drop_duplicates().tolist())}
+    grp["SortOrder"] = grp["PeriodLabel"].map(order_map)
+    grp = grp.sort_values(["SortOrder", "PeriodLabel"]).reset_index(drop=True)
+    return grp
+
+
+def _annotate_bars(ax, rects, labels, fontsize: int = 8, rotation: int = 0):
+    for rect, label in zip(rects, labels):
+        height = rect.get_height()
+        if height <= 0:
+            continue
+        ax.annotate(
+            label,
+            xy=(rect.get_x() + rect.get_width() / 2, height),
+            xytext=(0, 4),
+            textcoords="offset points",
+            ha="center",
+            va="bottom",
+            fontsize=fontsize,
+            rotation=rotation,
         )
+
+
+def _make_period_sales_units_figure(summary_df: pd.DataFrame, title: str = "Sales and Units by Selected Period"):
+    fig, ax1 = plt.subplots(figsize=(10.4, 5.2))
+
+    if summary_df.empty:
+        ax1.text(0.5, 0.5, "No data available", ha="center", va="center")
+        ax1.axis("off")
+        fig.suptitle(title, fontsize=14, fontweight="bold")
+        return fig
+
+    labels = summary_df["PeriodLabel"].astype(str).tolist()
+    sales = pd.to_numeric(summary_df["Sales"], errors="coerce").fillna(0.0).to_numpy()
+    units = pd.to_numeric(summary_df["Units"], errors="coerce").fillna(0.0).to_numpy()
+
+    x = np.arange(len(labels))
+    width = 0.38
+
+    sales_bars = ax1.bar(x - width / 2, sales, width=width, label="Sales")
+    ax1.set_ylabel("Sales")
+    ax1.set_xticks(x)
+    ax1.set_xticklabels(labels)
+
+    ax2 = ax1.twinx()
+    units_bars = ax2.bar(x + width / 2, units, width=width, alpha=0.70, label="Units")
+    ax2.set_ylabel("Units")
+
+    _annotate_bars(ax1, sales_bars, [money(float(v)) for v in sales], fontsize=8, rotation=0)
+    _annotate_bars(ax2, units_bars, [f"{float(v):,.0f}" for v in units], fontsize=8, rotation=0)
+
+    handles1, labels1 = ax1.get_legend_handles_labels()
+    handles2, labels2 = ax2.get_legend_handles_labels()
+    fig.legend(
+        handles1 + handles2,
+        labels1 + labels2,
+        loc="upper left",
+        bbox_to_anchor=(0.90, 0.92),
+        frameon=False,
     )
 
-    st.altair_chart(chart + pct_text + year_text, use_container_width=True)
+    ax1.set_title(title, fontsize=14, fontweight="bold")
+    fig.tight_layout(rect=[0, 0, 0.88, 1])
+    return fig
 
-    tbl = df.copy()
-    tbl["Value"] = tbl["Value"].map(lambda v: _fmt_value(float(v), metric))
-    tbl["Pct"] = tbl["Pct"].map(lambda v: f"{float(v):.1%}")
-    st.dataframe(tbl[["PeriodLabel", "Value", "Pct"]], use_container_width=True, hide_index=True)
+
+def _make_period_avg_metrics_figure(summary_df: pd.DataFrame, title: str = "Average Metrics by Selected Period"):
+    fig, axes = plt.subplots(1, 3, figsize=(14.2, 4.8))
+
+    if summary_df.empty:
+        for ax in axes:
+            ax.text(0.5, 0.5, "No data available", ha="center", va="center")
+            ax.axis("off")
+        fig.suptitle(title, fontsize=14, fontweight="bold")
+        return fig
+
+    labels = summary_df["PeriodLabel"].astype(str).tolist()
+    metrics = [
+        ("ASP", "Average Sale Price", [money(float(v)) for v in summary_df["ASP"].tolist()]),
+        ("AvgUnitsPerSKU", "Average Units per SKU", [f"{float(v):,.1f}" for v in summary_df["AvgUnitsPerSKU"].tolist()]),
+        ("AvgSalesPerSKU", "Average Sales per SKU", [money(float(v)) for v in summary_df["AvgSalesPerSKU"].tolist()]),
+    ]
+
+    for ax, (col, subtitle, text_labels) in zip(axes, metrics):
+        vals = pd.to_numeric(summary_df[col], errors="coerce").fillna(0.0).to_numpy()
+        x = np.arange(len(labels))
+        bars = ax.bar(x, vals)
+        ax.set_xticks(x)
+        ax.set_xticklabels(labels, rotation=0)
+        ax.set_title(subtitle, fontsize=12, fontweight="bold")
+        _annotate_bars(ax, bars, text_labels, fontsize=8, rotation=0)
+
+    fig.suptitle(title, fontsize=14, fontweight="bold")
+    fig.tight_layout(rect=[0, 0, 1, 0.94])
+    return fig
 
 
 def _quarterly_stacked_df(df: pd.DataFrame, metric: str) -> pd.DataFrame:
@@ -874,48 +926,76 @@ def _quarterly_stacked_df(df: pd.DataFrame, metric: str) -> pd.DataFrame:
     out = out.sort_values(["PeriodOrder", "Quarter"]).copy()
     out["Label"] = out["Value"].map(lambda v: _fmt_value(float(v), metric))
     out["Start"] = out.groupby("PeriodLabel")["Value"].cumsum() - out["Value"]
-    out["LabelY"] = out["Start"] + (out["Value"] * 0.18)
+    out["LabelY"] = out["Start"] + (out["Value"] * 0.50)
     out["ShowLabel"] = np.where(out["Value"] > 0, out["Label"], "")
 
     return out
 
 
-def _render_quarterly_stacked(df: pd.DataFrame, metric: str):
+def _make_quarterly_stacked_figure(df: pd.DataFrame, metric: str):
+    title = f"{metric} by Quarter, stacked within each selected year"
+    fig, ax = plt.subplots(figsize=(9.8, 5.4))
+
     if df.empty:
-        st.info("No quarterly stacked data available.")
-        return
+        ax.text(0.5, 0.5, "No quarterly stacked data available", ha="center", va="center")
+        ax.axis("off")
+        fig.suptitle(title, fontsize=14, fontweight="bold")
+        return fig
 
     work = df.copy()
+    work["Value"] = pd.to_numeric(work["Value"], errors="coerce").fillna(0.0)
 
-    bars = (
-        alt.Chart(work)
-        .mark_bar()
-        .encode(
-            x=alt.X("PeriodLabel:N", title="Period", sort=work["PeriodLabel"].drop_duplicates().tolist()),
-            y=alt.Y("Value:Q", title=metric),
-            color=alt.Color("Quarter:N", title="", sort=["Q1", "Q2", "Q3", "Q4"]),
-            order=alt.Order("Quarter:N", sort="ascending"),
-            tooltip=[
-                alt.Tooltip("PeriodLabel:N", title="Period"),
-                alt.Tooltip("Quarter:N", title="Quarter"),
-                alt.Tooltip("Value:Q", title=metric, format=",.2f" if metric == "Sales" else ",.0f"),
-            ],
-        )
-        .properties(height=440, title=f"{metric} by Quarter, stacked within each selected year")
+    periods = list(work["PeriodLabel"].drop_duplicates())
+    quarters = ["Q1", "Q2", "Q3", "Q4"]
+
+    pivot = (
+        work.pivot_table(index="PeriodLabel", columns="Quarter", values="Value", aggfunc="sum", fill_value=0.0)
+        .reindex(index=periods, columns=quarters, fill_value=0.0)
     )
 
-    text = (
-        alt.Chart(work[work["ShowLabel"] != ""])
-        .mark_text(size=11, color="black", fontWeight="bold", baseline="top")
-        .encode(
-            x=alt.X("PeriodLabel:N", sort=work["PeriodLabel"].drop_duplicates().tolist()),
-            y=alt.Y("LabelY:Q", title=metric),
-            detail="Quarter:N",
-            text="ShowLabel:N",
-        )
+    x = np.arange(len(pivot.index))
+    bottom = np.zeros(len(pivot.index))
+
+    for q in quarters:
+        vals = pivot[q].to_numpy(dtype=float)
+        bars = ax.bar(x, vals, bottom=bottom, label=q)
+
+        for rect, v, b in zip(bars, vals, bottom):
+            if v <= 0:
+                continue
+            label = money(float(v)) if metric == "Sales" else f"{float(v):,.0f}"
+            ax.text(
+                rect.get_x() + rect.get_width() / 2,
+                b + (v / 2),
+                label,
+                ha="center",
+                va="center",
+                fontsize=8,
+            )
+
+        bottom += vals
+
+    ax.set_xticks(x)
+    ax.set_xticklabels(pivot.index.tolist(), rotation=0)
+    ax.set_xlabel("Period")
+    ax.set_ylabel(metric)
+    ax.set_title(title, fontsize=14, fontweight="bold")
+    ax.legend(
+        loc="upper left",
+        bbox_to_anchor=(1.02, 1.0),
+        borderaxespad=0.0,
+        frameon=False,
+        title="",
     )
 
-    st.altair_chart(bars + text, use_container_width=True)
+    fig.tight_layout(rect=[0, 0, 0.84, 1])
+    return fig
+
+
+def _render_quarterly_stacked(df: pd.DataFrame, metric: str):
+    fig = _make_quarterly_stacked_figure(df, metric)
+    st.pyplot(fig, use_container_width=True)
+    plt.close(fig)
 
 
 def _top2_per_period(df: pd.DataFrame, dim: str, metric: str = "Sales") -> pd.DataFrame:
@@ -936,7 +1016,6 @@ def _top2_per_period(df: pd.DataFrame, dim: str, metric: str = "Sales") -> pd.Da
     out["PeriodOrder"] = out["PeriodLabel"].map(p_order)
 
     out = out.sort_values(["PeriodOrder", "Rank", "Value"], ascending=[True, True, False]).reset_index(drop=True)
-    out["YLabel"] = out["PeriodLabel"].astype(str) + " • #"
     out["YLabel"] = out["PeriodLabel"].astype(str) + " • #" + out["Rank"].astype(str) + " • " + out["Entity"].astype(str)
     out["ValueLabel"] = out["Value"].map(money)
     return out
@@ -1072,75 +1151,6 @@ def _fig_to_rl_image(fig, width_inches: float = 9.6) -> RLImage:
     return img
 
 
-def _make_pdf_pie_figure(df: pd.DataFrame, metric: str, title: str):
-    fig, ax = plt.subplots(figsize=(8.8, 5.8))
-    if df.empty:
-        ax.text(0.5, 0.5, f"No {metric.lower()} data available", ha="center", va="center")
-        ax.axis("off")
-        fig.suptitle(title, fontsize=14, fontweight="bold")
-        return fig
-
-    labels = df["PeriodLabel"].astype(str).tolist()
-    values = pd.to_numeric(df["Value"], errors="coerce").fillna(0.0).tolist()
-
-    if sum(values) <= 0:
-        ax.text(0.5, 0.5, f"No {metric.lower()} data available", ha="center", va="center")
-        ax.axis("off")
-        fig.suptitle(title, fontsize=14, fontweight="bold")
-        return fig
-
-    ax.pie(
-        values,
-        labels=labels,
-        autopct="%1.1f%%",
-        startangle=90,
-        wedgeprops={"linewidth": 1, "edgecolor": "white"},
-        textprops={"fontsize": 10},
-    )
-    ax.axis("equal")
-    fig.suptitle(title, fontsize=14, fontweight="bold")
-    return fig
-
-
-def _make_pdf_quarterly_stacked_figure(df: pd.DataFrame, metric: str):
-    fig, ax = plt.subplots(figsize=(9.6, 5.8))
-    title = f"{metric} by Quarter, stacked within each selected year"
-
-    if df.empty:
-        ax.text(0.5, 0.5, "No quarterly data available", ha="center", va="center")
-        ax.axis("off")
-        fig.suptitle(title, fontsize=14, fontweight="bold")
-        return fig
-
-    work = df.copy()
-    work["Value"] = pd.to_numeric(work["Value"], errors="coerce").fillna(0.0)
-
-    periods = list(work["PeriodLabel"].drop_duplicates())
-    quarters = ["Q1", "Q2", "Q3", "Q4"]
-
-    pivot = (
-        work.pivot_table(index="PeriodLabel", columns="Quarter", values="Value", aggfunc="sum", fill_value=0.0)
-        .reindex(index=periods, columns=quarters, fill_value=0.0)
-    )
-
-    x = np.arange(len(pivot.index))
-    bottom = np.zeros(len(pivot.index))
-
-    for q in quarters:
-        vals = pivot[q].to_numpy(dtype=float)
-        ax.bar(x, vals, bottom=bottom, label=q)
-        bottom += vals
-
-    ax.set_xticks(x)
-    ax.set_xticklabels(pivot.index.tolist(), rotation=0)
-    ax.set_ylabel(metric)
-    ax.set_xlabel("Period")
-    ax.legend(title="")
-    ax.set_title(title, fontsize=14, fontweight="bold")
-    fig.tight_layout()
-    return fig
-
-
 def _make_pdf_top2_bar_figure(df: pd.DataFrame, title: str):
     fig, ax = plt.subplots(figsize=(10.2, max(4.2, 0.45 * max(len(df), 4))))
 
@@ -1217,10 +1227,10 @@ def build_visual_analytics_pdf_bytes(
     doc = SimpleDocTemplate(
         buf,
         pagesize=landscape(letter),
-        leftMargin=24,
-        rightMargin=24,
-        topMargin=24,
-        bottomMargin=24,
+        leftMargin=18,
+        rightMargin=18,
+        topMargin=18,
+        bottomMargin=18,
     )
 
     styles = getSampleStyleSheet()
@@ -1231,71 +1241,49 @@ def build_visual_analytics_pdf_bytes(
         f"Analyze By: {granularity} &nbsp;&nbsp;&nbsp;|&nbsp;&nbsp;&nbsp; Selected: {', '.join(labels)}",
         styles["Normal"],
     )
+    story.extend([title, Spacer(1, 6), subtitle, Spacer(1, 12)])
 
-    sales = float(df_vis["Sales"].sum()) if "Sales" in df_vis.columns else 0.0
-    units = float(df_vis["Units"].sum()) if "Units" in df_vis.columns else 0.0
-    asp = sales / units if units else 0.0
-    retailers = int(df_vis["Retailer"].dropna().nunique()) if "Retailer" in df_vis.columns else 0
-    vendors = int(df_vis["Vendor"].dropna().nunique()) if "Vendor" in df_vis.columns else 0
-    skus = int(df_vis["SKU"].dropna().nunique()) if "SKU" in df_vis.columns else 0
+    summary_df = _period_summary_df(df_vis)
 
-    summary = Paragraph(
-        f"<b>Total Sales:</b> {money(sales)}"
-        f"&nbsp;&nbsp;&nbsp;&nbsp; <b>Total Units:</b> {units:,.0f}"
-        f"&nbsp;&nbsp;&nbsp;&nbsp; <b>ASP:</b> {money(asp)}"
-        f"<br/><b>Retailers:</b> {retailers:,}"
-        f"&nbsp;&nbsp;&nbsp;&nbsp; <b>Vendors:</b> {vendors:,}"
-        f"&nbsp;&nbsp;&nbsp;&nbsp; <b>SKUs:</b> {skus:,}",
-        styles["BodyText"],
-    )
+    story.append(Paragraph("Sales and Units by Selected Period", styles["Heading2"]))
+    story.append(_fig_to_rl_image(_make_period_sales_units_figure(summary_df, "Sales and Units by Selected Period"), width_inches=9.8))
+    story.append(Spacer(1, 10))
 
-    story.extend([title, Spacer(1, 6), subtitle, Spacer(1, 8), summary, Spacer(1, 16)])
-
-    sales_pie = _pie_chart_df(df_vis, "Sales")
-    units_pie = _pie_chart_df(df_vis, "Units")
-
-    story.append(Paragraph("Period Share — Sales", styles["Heading2"]))
-    story.append(_fig_to_rl_image(_make_pdf_pie_figure(sales_pie, "Sales", "Total Sales by Selected Period"), width_inches=9.6))
-    story.append(Spacer(1, 14))
-
-    story.append(Paragraph("Period Share — Units", styles["Heading2"]))
-    story.append(_fig_to_rl_image(_make_pdf_pie_figure(units_pie, "Units", "Total Units by Selected Period"), width_inches=9.6))
-    story.append(Spacer(1, 14))
+    story.append(Paragraph("Average Metrics by Selected Period", styles["Heading2"]))
+    story.append(_fig_to_rl_image(_make_period_avg_metrics_figure(summary_df, "Average Metrics by Selected Period"), width_inches=9.8))
+    story.append(Spacer(1, 10))
 
     if granularity == "Year":
         q_sales = _quarterly_stacked_df(df_vis, "Sales")
         q_units = _quarterly_stacked_df(df_vis, "Units")
 
-        story.append(PageBreak())
         story.append(Paragraph("Quarterly Stacked Bars — Sales", styles["Heading2"]))
-        story.append(_fig_to_rl_image(_make_pdf_quarterly_stacked_figure(q_sales, "Sales"), width_inches=9.8))
-        story.append(Spacer(1, 14))
+        story.append(_fig_to_rl_image(_make_quarterly_stacked_figure(q_sales, "Sales"), width_inches=9.8))
+        story.append(Spacer(1, 10))
 
         story.append(Paragraph("Quarterly Stacked Bars — Units", styles["Heading2"]))
-        story.append(_fig_to_rl_image(_make_pdf_quarterly_stacked_figure(q_units, "Units"), width_inches=9.8))
-        story.append(Spacer(1, 14))
+        story.append(_fig_to_rl_image(_make_quarterly_stacked_figure(q_units, "Units"), width_inches=9.8))
+        story.append(Spacer(1, 10))
 
     top_retailer = _top2_per_period(df_vis, "Retailer", "Sales")
     top_vendor = _top2_per_period(df_vis, "Vendor", "Sales")
     top_sku = _top2_per_period(df_vis, "SKU", "Sales")
 
-    story.append(PageBreak())
     story.append(Paragraph("Biggest 2 Retailers by Selected Period", styles["Heading2"]))
     story.append(_fig_to_rl_image(_make_pdf_top2_bar_figure(top_retailer, "Biggest 2 Retailers by Selected Period"), width_inches=9.8))
-    story.append(Spacer(1, 14))
+    story.append(Spacer(1, 10))
 
     story.append(Paragraph("Biggest 2 Vendors by Selected Period", styles["Heading2"]))
     story.append(_fig_to_rl_image(_make_pdf_top2_bar_figure(top_vendor, "Biggest 2 Vendors by Selected Period"), width_inches=9.8))
-    story.append(Spacer(1, 14))
+    story.append(Spacer(1, 10))
 
     story.append(Paragraph("Biggest 2 SKUs by Selected Period", styles["Heading2"]))
     story.append(_fig_to_rl_image(_make_pdf_top2_bar_figure(top_sku, "Biggest 2 SKUs by Selected Period"), width_inches=9.8))
-    story.append(Spacer(1, 14))
+    story.append(Spacer(1, 10))
 
     radar_df = _all_years_radar_month_df(df_hist_all)
-    story.append(PageBreak())
     story.append(Paragraph("All-Years Seasonality Radar", styles["Heading2"]))
-    story.append(_fig_to_rl_image(_make_pdf_radar_figure(radar_df), width_inches=7.4))
+    story.append(_fig_to_rl_image(_make_pdf_radar_figure(radar_df), width_inches=6.8))
 
     doc.build(story)
     return buf.getvalue()
@@ -1371,12 +1359,17 @@ def render_visual_only(ctx: dict):
     except Exception as e:
         st.warning(f"PDF export unavailable: {e}")
 
-    st.markdown("### Period Share")
-    c_sales, c_units = st.columns(2)
-    with c_sales:
-        _render_pie_chart(_pie_chart_df(df_vis, "Sales"), "Sales", "Total Sales by Selected Period")
-    with c_units:
-        _render_pie_chart(_pie_chart_df(df_vis, "Units"), "Units", "Total Units by Selected Period")
+    summary_df = _period_summary_df(df_vis)
+
+    st.markdown("### Sales and Units by Selected Period")
+    fig = _make_period_sales_units_figure(summary_df, "Sales and Units by Selected Period")
+    st.pyplot(fig, use_container_width=True)
+    plt.close(fig)
+
+    st.markdown("### Average Metrics by Selected Period")
+    fig = _make_period_avg_metrics_figure(summary_df, "Average Metrics by Selected Period")
+    st.pyplot(fig, use_container_width=True)
+    plt.close(fig)
 
     if granularity == "Year":
         st.markdown("### Quarterly Stacked Bars")
