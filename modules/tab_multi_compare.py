@@ -828,6 +828,7 @@ def _render_sales_or_units_chart(
         return
 
     work = summary_df[["PeriodLabel", "SortOrder", value_col]].copy()
+    order = summary_df["PeriodLabel"].tolist()
 
     if value_col == "Sales":
         work["LabelText"] = work[value_col].map(lambda v: money(float(v)))
@@ -838,7 +839,7 @@ def _render_sales_or_units_chart(
         alt.Chart(work)
         .mark_bar()
         .encode(
-            x=alt.X("PeriodLabel:N", title="Period", sort=summary_df["PeriodLabel"].tolist()),
+            x=alt.X("PeriodLabel:N", title="Period", sort=order),
             y=alt.Y(f"{value_col}:Q", title=tooltip_title),
             tooltip=[
                 alt.Tooltip("PeriodLabel:N", title="Period"),
@@ -851,7 +852,7 @@ def _render_sales_or_units_chart(
         alt.Chart(work)
         .mark_text(dy=12, baseline="top")
         .encode(
-            x=alt.X("PeriodLabel:N", sort=summary_df["PeriodLabel"].tolist()),
+            x=alt.X("PeriodLabel:N", sort=order),
             y=alt.Y(f"{value_col}:Q"),
             text="LabelText:N",
         )
@@ -875,15 +876,20 @@ def _render_single_metric_bar_chart(
         return
 
     work = summary_df[["PeriodLabel", "SortOrder", value_col]].copy()
-    work["LabelText"] = work[value_col].map(
-        lambda v: money(float(v)) if "Sales" in tooltip_title or tooltip_title == "ASP" else f"{float(v):,.2f}"
-    )
+    order = summary_df["PeriodLabel"].tolist()
+
+    if tooltip_title == "Average Sales per SKU":
+        work["LabelText"] = work[value_col].map(lambda v: money(float(v)))
+    elif tooltip_title == "Average Units per SKU":
+        work["LabelText"] = work[value_col].map(lambda v: f"{float(v):,.2f}")
+    else:
+        work["LabelText"] = work[value_col].map(lambda v: f"{float(v):,.2f}")
 
     bars = (
         alt.Chart(work)
         .mark_bar()
         .encode(
-            x=alt.X("PeriodLabel:N", title="Period", sort=summary_df["PeriodLabel"].tolist()),
+            x=alt.X("PeriodLabel:N", title="Period", sort=order),
             y=alt.Y(f"{value_col}:Q", title=tooltip_title),
             tooltip=[
                 alt.Tooltip("PeriodLabel:N", title="Period"),
@@ -896,7 +902,7 @@ def _render_single_metric_bar_chart(
         alt.Chart(work)
         .mark_text(dy=12, baseline="top")
         .encode(
-            x=alt.X("PeriodLabel:N", sort=summary_df["PeriodLabel"].tolist()),
+            x=alt.X("PeriodLabel:N", sort=order),
             y=alt.Y(f"{value_col}:Q"),
             text="LabelText:N",
         )
@@ -911,8 +917,10 @@ def _render_sales_asp_combo_chart(summary_df: pd.DataFrame):
         st.info("No data available.")
         return
 
-    work = summary_df[["PeriodLabel", "Sales", "ASP"]].copy()
     order = summary_df["PeriodLabel"].tolist()
+    work = summary_df[["PeriodLabel", "Sales", "ASP"]].copy()
+    work["SalesLabel"] = work["Sales"].map(lambda v: money(float(v)))
+    work["ASPLabel"] = work["ASP"].map(lambda v: money(float(v)))
 
     bars = (
         alt.Chart(work)
@@ -928,11 +936,8 @@ def _render_sales_asp_combo_chart(summary_df: pd.DataFrame):
         )
     )
 
-    sales_text_df = work.copy()
-    sales_text_df["SalesLabel"] = sales_text_df["Sales"].map(lambda v: money(float(v)))
-
     sales_text = (
-        alt.Chart(sales_text_df)
+        alt.Chart(work)
         .mark_text(dy=12, baseline="top")
         .encode(
             x=alt.X("PeriodLabel:N", sort=order),
@@ -954,11 +959,8 @@ def _render_sales_asp_combo_chart(summary_df: pd.DataFrame):
         )
     )
 
-    asp_text_df = work.copy()
-    asp_text_df["ASPLabel"] = asp_text_df["ASP"].map(lambda v: money(float(v)))
-
     asp_text = (
-        alt.Chart(asp_text_df)
+        alt.Chart(work)
         .mark_text(dy=-10)
         .encode(
             x=alt.X("PeriodLabel:N", sort=order),
@@ -969,7 +971,77 @@ def _render_sales_asp_combo_chart(summary_df: pd.DataFrame):
 
     chart = alt.layer(bars, sales_text, line, asp_text).resolve_scale(
         y="independent"
-    ).properties(height=360, title="Sales and ASP by Selected Period")
+    ).properties(
+        height=430,
+        title="Sales and ASP by Selected Period"
+    )
+
+    st.altair_chart(chart, use_container_width=True)
+
+
+def _render_sales_units_combo_chart(summary_df: pd.DataFrame):
+    if summary_df.empty:
+        st.info("No data available.")
+        return
+
+    order = summary_df["PeriodLabel"].tolist()
+    work = summary_df[["PeriodLabel", "Sales", "Units"]].copy()
+    work["SalesLabel"] = work["Sales"].map(lambda v: money(float(v)))
+    work["UnitsLabel"] = work["Units"].map(lambda v: f"{float(v):,.0f}")
+
+    bars = (
+        alt.Chart(work)
+        .mark_bar()
+        .encode(
+            x=alt.X("PeriodLabel:N", title="Period", sort=order),
+            y=alt.Y("Sales:Q", title="Sales"),
+            tooltip=[
+                alt.Tooltip("PeriodLabel:N", title="Period"),
+                alt.Tooltip("Sales:Q", title="Sales", format=",.2f"),
+                alt.Tooltip("Units:Q", title="Units", format=",.0f"),
+            ],
+        )
+    )
+
+    sales_text = (
+        alt.Chart(work)
+        .mark_text(dy=12, baseline="top")
+        .encode(
+            x=alt.X("PeriodLabel:N", sort=order),
+            y=alt.Y("Sales:Q"),
+            text="SalesLabel:N",
+        )
+    )
+
+    line = (
+        alt.Chart(work)
+        .mark_line(point=True)
+        .encode(
+            x=alt.X("PeriodLabel:N", sort=order),
+            y=alt.Y("Units:Q", title="Units"),
+            tooltip=[
+                alt.Tooltip("PeriodLabel:N", title="Period"),
+                alt.Tooltip("Units:Q", title="Units", format=",.0f"),
+            ],
+        )
+    )
+
+    units_text = (
+        alt.Chart(work)
+        .mark_text(dy=-10)
+        .encode(
+            x=alt.X("PeriodLabel:N", sort=order),
+            y=alt.Y("Units:Q"),
+            text="UnitsLabel:N",
+        )
+    )
+
+    chart = alt.layer(bars, sales_text, line, units_text).resolve_scale(
+        y="independent"
+    ).properties(
+        height=430,
+        title="Sales and Units by Selected Period"
+    )
 
     st.altair_chart(chart, use_container_width=True)
 
@@ -1028,7 +1100,7 @@ def _make_single_metric_bar_figure(
 
 
 def _make_sales_asp_combo_figure(summary_df: pd.DataFrame, title: str = "Sales and ASP by Selected Period"):
-    fig, ax1 = plt.subplots(figsize=(10.2, 5.0))
+    fig, ax1 = plt.subplots(figsize=(10.4, 5.2))
 
     if summary_df.empty:
         ax1.text(0.5, 0.5, "No data available", ha="center", va="center")
@@ -1074,9 +1146,56 @@ def _make_sales_asp_combo_figure(summary_df: pd.DataFrame, title: str = "Sales a
     return fig
 
 
+def _make_sales_units_combo_figure(summary_df: pd.DataFrame, title: str = "Sales and Units by Selected Period"):
+    fig, ax1 = plt.subplots(figsize=(10.4, 5.2))
+
+    if summary_df.empty:
+        ax1.text(0.5, 0.5, "No data available", ha="center", va="center")
+        ax1.axis("off")
+        fig.suptitle(title, fontsize=14, fontweight="bold")
+        return fig
+
+    labels = summary_df["PeriodLabel"].astype(str).tolist()
+    sales = pd.to_numeric(summary_df["Sales"], errors="coerce").fillna(0.0).to_numpy()
+    units = pd.to_numeric(summary_df["Units"], errors="coerce").fillna(0.0).to_numpy()
+
+    x = np.arange(len(labels))
+    bars = ax1.bar(x, sales, width=0.55, label="Sales")
+    ax1.set_xticks(x)
+    ax1.set_xticklabels(labels)
+    ax1.set_ylabel("Sales")
+    ax1.set_title(title, fontsize=14, fontweight="bold")
+
+    for rect, val in zip(bars, sales):
+        if val <= 0:
+            continue
+        ax1.text(
+            rect.get_x() + rect.get_width() / 2,
+            rect.get_height(),
+            money(float(val)),
+            ha="center",
+            va="bottom",
+            fontsize=8,
+        )
+
+    ax2 = ax1.twinx()
+    ax2.plot(x, units, marker="o", linewidth=2, label="Units")
+    ax2.set_ylabel("Units")
+
+    for xi, val in zip(x, units):
+        ax2.text(xi, val, f"{float(val):,.0f}", ha="center", va="bottom", fontsize=8)
+
+    handles1, labels1 = ax1.get_legend_handles_labels()
+    handles2, labels2 = ax2.get_legend_handles_labels()
+    fig.legend(handles1 + handles2, labels1 + labels2, loc="upper left", bbox_to_anchor=(0.84, 0.92), frameon=False)
+
+    fig.tight_layout(rect=[0, 0, 0.86, 1])
+    return fig
+
+
 def _quarterly_stacked_df(df: pd.DataFrame, metric: str) -> pd.DataFrame:
     if df.empty or metric not in df.columns or "Quarter" not in df.columns:
-        return pd.DataFrame(columns=["PeriodLabel", "Quarter", "Value", "Label"])
+        return pd.DataFrame(columns=["PeriodLabel", "Quarter", "Value", "ValueLabel", "PeriodOrder"])
 
     out = (
         df.dropna(subset=["Quarter"])
@@ -1087,17 +1206,56 @@ def _quarterly_stacked_df(df: pd.DataFrame, metric: str) -> pd.DataFrame:
 
     q_order = ["Q1", "Q2", "Q3", "Q4"]
     out["Quarter"] = pd.Categorical(out["Quarter"], categories=q_order, ordered=True)
-
     p_order = {lbl: i for i, lbl in enumerate(df["PeriodLabel"].drop_duplicates().tolist())}
     out["PeriodOrder"] = out["PeriodLabel"].map(p_order)
+    out = out.sort_values(["PeriodOrder", "Quarter"]).reset_index(drop=True)
 
-    out = out.sort_values(["PeriodOrder", "Quarter"]).copy()
-    out["Label"] = out["Value"].map(lambda v: _fmt_value(float(v), metric))
-    out["Start"] = out.groupby("PeriodLabel")["Value"].cumsum() - out["Value"]
-    out["LabelY"] = out["Start"] + (out["Value"] * 0.50)
-    out["ShowLabel"] = np.where(out["Value"] > 0, out["Label"], "")
-
+    if metric == "Sales":
+        out["ValueLabel"] = out["Value"].map(lambda v: money(float(v)))
+    else:
+        out["ValueLabel"] = out["Value"].map(lambda v: f"{float(v):,.0f}")
     return out
+
+
+def _render_quarterly_stacked_altair(df: pd.DataFrame, metric: str):
+    if df.empty:
+        st.info("No quarterly stacked data available.")
+        return
+
+    order = df["PeriodLabel"].drop_duplicates().tolist()
+
+    bars = (
+        alt.Chart(df)
+        .mark_bar()
+        .encode(
+            x=alt.X("PeriodLabel:N", title="Period", sort=order),
+            y=alt.Y("Value:Q", title=metric, stack="zero"),
+            color=alt.Color("Quarter:N", title="", sort=["Q1", "Q2", "Q3", "Q4"]),
+            order=alt.Order("Quarter:N", sort="ascending"),
+            tooltip=[
+                alt.Tooltip("PeriodLabel:N", title="Period"),
+                alt.Tooltip("Quarter:N", title="Quarter"),
+                alt.Tooltip("Value:Q", title=metric, format=",.2f" if metric == "Sales" else ",.0f"),
+            ],
+        )
+    )
+
+    text = (
+        alt.Chart(df)
+        .mark_text(size=10)
+        .encode(
+            x=alt.X("PeriodLabel:N", sort=order),
+            y=alt.Y("Value:Q", stack="center"),
+            detail="Quarter:N",
+            text="ValueLabel:N",
+        )
+    )
+
+    chart = (bars + text).properties(
+        height=430,
+        title=f"{metric} by Quarter, stacked within each selected year",
+    )
+    st.altair_chart(chart, use_container_width=True)
 
 
 def _make_quarterly_stacked_figure(df: pd.DataFrame, metric: str):
@@ -1158,12 +1316,6 @@ def _make_quarterly_stacked_figure(df: pd.DataFrame, metric: str):
 
     fig.tight_layout(rect=[0, 0, 0.84, 1])
     return fig
-
-
-def _render_quarterly_stacked(df: pd.DataFrame, metric: str):
-    fig = _make_quarterly_stacked_figure(df, metric)
-    st.pyplot(fig, use_container_width=True)
-    plt.close(fig)
 
 
 def _top2_per_period(df: pd.DataFrame, dim: str, metric: str = "Sales") -> pd.DataFrame:
@@ -1272,16 +1424,126 @@ def _all_years_radar_month_df(df_hist: pd.DataFrame) -> pd.DataFrame:
     out["ScaledSales"] = out["TotalSales"] / max_sales if max_sales > 0 else 0.0
     out["Label"] = out["Month"]
     out["Rank"] = out["TotalSales"].rank(method="dense", ascending=False).astype(int)
+    out["AngleDeg"] = (out["MonthNum"] - 1) * 30
+    out["QuarterOrder"] = out["Quarter"].map({"Q1": 1, "Q2": 2, "Q3": 3, "Q4": 4})
+    out["SalesLabel"] = out["TotalSales"].map(lambda v: money(float(v)))
     return out
 
 
-def _render_radar(df: pd.DataFrame):
+def _render_radar_altair(df: pd.DataFrame):
     if df.empty:
-        st.info("Not enough data to build the radar chart.")
+        st.info("No radar data available.")
         return
 
-    labels = df["Label"].tolist()
+    rings = pd.DataFrame({"r": [0.25, 0.50, 0.75, 1.00]})
+
+    ring_chart = (
+        alt.Chart(rings)
+        .mark_arc(fillOpacity=0, strokeOpacity=0.20)
+        .encode(
+            theta=alt.Theta(value=360),
+            radius=alt.Radius("r:Q", scale=alt.Scale(domain=[0, 1.0], rangeMin=0, rangeMax=180)),
+        )
+    )
+
+    quarter_labels = pd.DataFrame(
+        {
+            "Quarter": ["Q1", "Q2", "Q3", "Q4"],
+            "AngleDeg": [45, 135, 225, 315],
+            "Radius": [1.10, 1.10, 1.10, 1.10],
+        }
+    )
+
+    quarter_text = (
+        alt.Chart(quarter_labels)
+        .mark_text(fontSize=12, fontWeight="bold")
+        .encode(
+            theta=alt.Theta("AngleDeg:Q", scale=alt.Scale(domain=[0, 360])),
+            radius=alt.Radius("Radius:Q", scale=alt.Scale(domain=[0, 1.2], rangeMin=0, rangeMax=200)),
+            text="Quarter:N",
+        )
+    )
+
+    month_text = (
+        alt.Chart(df)
+        .mark_text(fontSize=9)
+        .encode(
+            theta=alt.Theta("AngleDeg:Q", scale=alt.Scale(domain=[0, 360])),
+            radius=alt.Radius(value=198),
+            text="Month:N",
+            tooltip=[
+                alt.Tooltip("Quarter:N", title="Quarter"),
+                alt.Tooltip("Month:N", title="Month"),
+                alt.Tooltip("TotalSales:Q", title="Sales", format=",.2f"),
+            ],
+        )
+    )
+
+    area = (
+        alt.Chart(df)
+        .mark_line(point=True)
+        .encode(
+            theta=alt.Theta("AngleDeg:Q", scale=alt.Scale(domain=[0, 360])),
+            radius=alt.Radius("ScaledSales:Q", scale=alt.Scale(domain=[0, 1.0], rangeMin=0, rangeMax=180)),
+            tooltip=[
+                alt.Tooltip("Quarter:N", title="Quarter"),
+                alt.Tooltip("Month:N", title="Month"),
+                alt.Tooltip("TotalSales:Q", title="Sales", format=",.2f"),
+            ],
+        )
+    )
+
+    fill = (
+        alt.Chart(df)
+        .mark_area(opacity=0.18)
+        .encode(
+            theta=alt.Theta("AngleDeg:Q", scale=alt.Scale(domain=[0, 360])),
+            radius=alt.Radius("ScaledSales:Q", scale=alt.Scale(domain=[0, 1.0], rangeMin=0, rangeMax=180)),
+            tooltip=[
+                alt.Tooltip("Quarter:N", title="Quarter"),
+                alt.Tooltip("Month:N", title="Month"),
+                alt.Tooltip("TotalSales:Q", title="Sales", format=",.2f"),
+            ],
+        )
+    )
+
+    value_text = (
+        alt.Chart(df)
+        .mark_text(fontSize=8, dy=-8)
+        .encode(
+            theta=alt.Theta("AngleDeg:Q", scale=alt.Scale(domain=[0, 360])),
+            radius=alt.Radius("ScaledSales:Q", scale=alt.Scale(domain=[0, 1.0], rangeMin=0, rangeMax=180)),
+            text="SalesLabel:N",
+        )
+    )
+
+    chart = alt.layer(
+        ring_chart,
+        fill,
+        area,
+        value_text,
+        month_text,
+        quarter_text,
+    ).properties(
+        width=520,
+        height=520,
+        title="All-Years Sales Seasonality Radar (Q1 → Q4, months inside each section)",
+    )
+
+    st.altair_chart(chart, use_container_width=True)
+
+
+def _make_pdf_radar_figure(df: pd.DataFrame):
+    if df.empty:
+        fig, ax = plt.subplots(figsize=(8.5, 8.5))
+        ax.text(0.5, 0.5, "No radar data available", ha="center", va="center")
+        ax.axis("off")
+        fig.suptitle("All-Years Sales Seasonality Radar", fontsize=14, fontweight="bold")
+        return fig
+
+    labels = df["Month"].tolist()
     values = df["ScaledSales"].tolist()
+    quarters = df["Quarter"].tolist()
 
     angles = [n / float(len(labels)) * 2 * math.pi for n in range(len(labels))]
     angles += angles[:1]
@@ -1300,10 +1562,15 @@ def _render_radar(df: pd.DataFrame):
 
     ax.plot(angles, values, linewidth=2)
     ax.fill(angles, values, alpha=0.20)
-    ax.set_title("All-Years Sales Seasonality Radar (Jan → Dec)", pad=24, fontsize=14)
 
-    st.pyplot(fig, use_container_width=True)
-    plt.close(fig)
+    quarter_midpoints = [1, 4, 7, 10]
+    quarter_names = ["Q1", "Q2", "Q3", "Q4"]
+    for idx, qn in zip(quarter_midpoints, quarter_names):
+        angle = angles[idx]
+        ax.text(angle, 1.12, qn, ha="center", va="center", fontsize=11, fontweight="bold")
+
+    ax.set_title("All-Years Sales Seasonality Radar (Q1 → Q4, months inside each section)", pad=24, fontsize=14, fontweight="bold")
+    return fig
 
 
 def _fig_to_rl_image(fig, width_inches: float = 9.6) -> RLImage:
@@ -1352,38 +1619,6 @@ def _make_pdf_top2_bar_figure(df: pd.DataFrame, title: str):
     return fig
 
 
-def _make_pdf_radar_figure(df: pd.DataFrame):
-    if df.empty:
-        fig, ax = plt.subplots(figsize=(8.5, 8.5))
-        ax.text(0.5, 0.5, "No radar data available", ha="center", va="center")
-        ax.axis("off")
-        fig.suptitle("All-Years Sales Seasonality Radar (Jan → Dec)", fontsize=14, fontweight="bold")
-        return fig
-
-    labels = df["Label"].tolist()
-    values = df["ScaledSales"].tolist()
-
-    angles = [n / float(len(labels)) * 2 * math.pi for n in range(len(labels))]
-    angles += angles[:1]
-    values += values[:1]
-
-    fig = plt.figure(figsize=(8.5, 8.5))
-    ax = plt.subplot(111, polar=True)
-    ax.set_theta_offset(math.pi / 2)
-    ax.set_theta_direction(-1)
-
-    plt.xticks(angles[:-1], labels, fontsize=9)
-    ax.set_rlabel_position(0)
-    ax.set_yticks([0.25, 0.50, 0.75, 1.00])
-    ax.set_yticklabels(["25%", "50%", "75%", "100%"], fontsize=8)
-    ax.set_ylim(0, 1.0)
-
-    ax.plot(angles, values, linewidth=2)
-    ax.fill(angles, values, alpha=0.20)
-    ax.set_title("All-Years Sales Seasonality Radar (Jan → Dec)", pad=24, fontsize=14, fontweight="bold")
-    return fig
-
-
 def build_visual_analytics_pdf_bytes(
     df_scope: pd.DataFrame,
     df_vis: pd.DataFrame,
@@ -1423,6 +1658,10 @@ def build_visual_analytics_pdf_bytes(
 
     story.append(Paragraph("Sales and ASP by Selected Period", styles["Heading2"]))
     story.append(_fig_to_rl_image(_make_sales_asp_combo_figure(summary_df, "Sales and ASP by Selected Period"), width_inches=9.8))
+    story.append(Spacer(1, 10))
+
+    story.append(Paragraph("Sales and Units by Selected Period", styles["Heading2"]))
+    story.append(_fig_to_rl_image(_make_sales_units_combo_figure(summary_df, "Sales and Units by Selected Period"), width_inches=9.8))
     story.append(Spacer(1, 10))
 
     story.append(Paragraph("Average Sales per SKU", styles["Heading2"]))
@@ -1562,6 +1801,9 @@ def render_visual_only(ctx: dict):
     st.markdown("### Sales and ASP by Selected Period")
     _render_sales_asp_combo_chart(summary_df)
 
+    st.markdown("### Sales and Units by Selected Period")
+    _render_sales_units_combo_chart(summary_df)
+
     c_avg_sales, c_avg_units = st.columns(2)
 
     with c_avg_sales:
@@ -1590,9 +1832,9 @@ def render_visual_only(ctx: dict):
         st.markdown("### Quarterly Stacked Bars")
         q_sales, q_units = st.columns(2)
         with q_sales:
-            _render_quarterly_stacked(_quarterly_stacked_df(df_vis, "Sales"), "Sales")
+            _render_quarterly_stacked_altair(_quarterly_stacked_df(df_vis, "Sales"), "Sales")
         with q_units:
-            _render_quarterly_stacked(_quarterly_stacked_df(df_vis, "Units"), "Units")
+            _render_quarterly_stacked_altair(_quarterly_stacked_df(df_vis, "Units"), "Units")
 
     st.markdown("### Biggest 2 by Selected Period")
     rv1, rv2 = st.columns(2)
@@ -1607,19 +1849,7 @@ def render_visual_only(ctx: dict):
     st.caption("Uses all filtered history in the app across all years for the current scope filter.")
 
     radar_df = _all_years_radar_month_df(df_hist_all)
-    r1, r2 = st.columns([1.6, 1.0])
-
-    with r1:
-        _render_radar(radar_df)
-
-    with r2:
-        if radar_df.empty:
-            st.info("No radar data available.")
-        else:
-            tbl = radar_df[["Quarter", "Month", "TotalSales", "Rank"]].copy()
-            tbl = tbl.sort_values(["Rank", "Month"]).reset_index(drop=True)
-            tbl["TotalSales"] = tbl["TotalSales"].map(money)
-            st.dataframe(tbl, use_container_width=True, hide_index=True)
+    _render_radar_altair(radar_df)
 
 
 def render(ctx: dict):
