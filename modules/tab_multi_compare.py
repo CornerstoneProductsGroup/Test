@@ -28,6 +28,13 @@ from .shared_core import (
 )
 
 
+LINE_CYAN = "#00C2FF"
+TEXT_LIGHT = "#C7D2FE"
+TEXT_AMBER = "#FFC857"
+TEXT_TEAL = "#7FDBFF"
+RING_GRAY = "#8A8F98"
+
+
 def _fmt_value(v: float, metric: str) -> str:
     return money(v) if metric == "Sales" else f"{float(v):,.0f}"
 
@@ -816,52 +823,6 @@ def _period_summary_df(df_vis: pd.DataFrame) -> pd.DataFrame:
     return grp
 
 
-def _render_sales_or_units_chart(
-    summary_df: pd.DataFrame,
-    value_col: str,
-    title: str,
-    tooltip_title: str,
-    fmt: str,
-):
-    if summary_df.empty or value_col not in summary_df.columns:
-        st.info("No data available.")
-        return
-
-    work = summary_df[["PeriodLabel", "SortOrder", value_col]].copy()
-    order = summary_df["PeriodLabel"].tolist()
-
-    if value_col == "Sales":
-        work["LabelText"] = work[value_col].map(lambda v: money(float(v)))
-    else:
-        work["LabelText"] = work[value_col].map(lambda v: f"{float(v):,.0f}")
-
-    bars = (
-        alt.Chart(work)
-        .mark_bar()
-        .encode(
-            x=alt.X("PeriodLabel:N", title="Period", sort=order),
-            y=alt.Y(f"{value_col}:Q", title=tooltip_title),
-            tooltip=[
-                alt.Tooltip("PeriodLabel:N", title="Period"),
-                alt.Tooltip(f"{value_col}:Q", title=tooltip_title, format=fmt),
-            ],
-        )
-    )
-
-    text = (
-        alt.Chart(work)
-        .mark_text(dy=12, baseline="top")
-        .encode(
-            x=alt.X("PeriodLabel:N", sort=order),
-            y=alt.Y(f"{value_col}:Q"),
-            text="LabelText:N",
-        )
-    )
-
-    chart = (bars + text).properties(height=340, title=title)
-    st.altair_chart(chart, use_container_width=True)
-
-
 def _render_single_metric_bar_chart(
     summary_df: pd.DataFrame,
     value_col: str,
@@ -900,7 +861,7 @@ def _render_single_metric_bar_chart(
 
     text = (
         alt.Chart(work)
-        .mark_text(dy=12, baseline="top")
+        .mark_text(dy=12, baseline="top", color=TEXT_LIGHT)
         .encode(
             x=alt.X("PeriodLabel:N", sort=order),
             y=alt.Y(f"{value_col}:Q"),
@@ -916,6 +877,7 @@ def _render_single_metric_bar_chart(
         anchor="start",
         fontSize=14,
         offset=12,
+        color=TEXT_LIGHT,
     )
 
     st.altair_chart(chart, use_container_width=True)
@@ -926,17 +888,27 @@ def _render_sales_asp_combo_chart(summary_df: pd.DataFrame):
         st.info("No data available.")
         return
 
-    order = summary_df["PeriodLabel"].tolist()
     work = summary_df[["PeriodLabel", "Sales", "ASP"]].copy()
+    order = work["PeriodLabel"].tolist()
+
+    max_sales = float(work["Sales"].max()) if not work.empty else 0.0
+    min_asp = float(work["ASP"].min()) if not work.empty else 0.0
+    max_asp = float(work["ASP"].max()) if not work.empty else 0.0
+
+    sales_domain_max = max(max_sales * 1.28, 1.0)
+    asp_domain_min = max(0.0, min_asp * 0.92)
+    asp_domain_max = max(max_asp * 1.18, 1.0)
+
     work["SalesLabel"] = work["Sales"].map(lambda v: money(float(v)))
     work["ASPLabel"] = work["ASP"].map(lambda v: money(float(v)))
+    work["ASPLabelY"] = work["ASP"] * 1.05
 
     bars = (
         alt.Chart(work)
         .mark_bar()
         .encode(
             x=alt.X("PeriodLabel:N", title="Period", sort=order),
-            y=alt.Y("Sales:Q", title="Sales"),
+            y=alt.Y("Sales:Q", title="Sales", scale=alt.Scale(domain=[0, sales_domain_max])),
             tooltip=[
                 alt.Tooltip("PeriodLabel:N", title="Period"),
                 alt.Tooltip("Sales:Q", title="Sales", format=",.2f"),
@@ -947,20 +919,20 @@ def _render_sales_asp_combo_chart(summary_df: pd.DataFrame):
 
     sales_text = (
         alt.Chart(work)
-        .mark_text(dy=12, baseline="top")
+        .mark_text(dy=12, baseline="top", color=TEXT_LIGHT)
         .encode(
             x=alt.X("PeriodLabel:N", sort=order),
-            y=alt.Y("Sales:Q"),
+            y=alt.Y("Sales:Q", scale=alt.Scale(domain=[0, sales_domain_max])),
             text="SalesLabel:N",
         )
     )
 
     line = (
         alt.Chart(work)
-        .mark_line(point=True, strokeWidth=2.5)
+        .mark_line(point=alt.OverlayMarkDef(color=LINE_CYAN, filled=True, size=70), strokeWidth=2.8, color=LINE_CYAN)
         .encode(
             x=alt.X("PeriodLabel:N", sort=order),
-            y=alt.Y("ASP:Q", title="ASP"),
+            y=alt.Y("ASP:Q", title="ASP", scale=alt.Scale(domain=[asp_domain_min, asp_domain_max])),
             tooltip=[
                 alt.Tooltip("PeriodLabel:N", title="Period"),
                 alt.Tooltip("ASP:Q", title="ASP", format=",.2f"),
@@ -970,10 +942,10 @@ def _render_sales_asp_combo_chart(summary_df: pd.DataFrame):
 
     asp_text = (
         alt.Chart(work)
-        .mark_text(dy=-14)
+        .mark_text(dy=-14, color=LINE_CYAN, fontWeight="bold")
         .encode(
             x=alt.X("PeriodLabel:N", sort=order),
-            y=alt.Y("ASP:Q"),
+            y=alt.Y("ASPLabelY:Q", scale=alt.Scale(domain=[asp_domain_min, asp_domain_max])),
             text="ASPLabel:N",
         )
     )
@@ -981,8 +953,13 @@ def _render_sales_asp_combo_chart(summary_df: pd.DataFrame):
     chart = alt.layer(bars, sales_text, line, asp_text).resolve_scale(
         y="independent"
     ).properties(
-        height=480,
+        height=500,
         title="Sales and ASP by Selected Period",
+    ).configure_title(
+        anchor="start",
+        fontSize=16,
+        offset=12,
+        color=TEXT_LIGHT,
     )
 
     st.altair_chart(chart, use_container_width=True)
@@ -993,17 +970,27 @@ def _render_sales_units_combo_chart(summary_df: pd.DataFrame):
         st.info("No data available.")
         return
 
-    order = summary_df["PeriodLabel"].tolist()
     work = summary_df[["PeriodLabel", "Sales", "Units"]].copy()
+    order = work["PeriodLabel"].tolist()
+
+    max_sales = float(work["Sales"].max()) if not work.empty else 0.0
+    min_units = float(work["Units"].min()) if not work.empty else 0.0
+    max_units = float(work["Units"].max()) if not work.empty else 0.0
+
+    sales_domain_max = max(max_sales * 1.28, 1.0)
+    units_domain_min = max(0.0, min_units * 0.92)
+    units_domain_max = max(max_units * 1.18, 1.0)
+
     work["SalesLabel"] = work["Sales"].map(lambda v: money(float(v)))
     work["UnitsLabel"] = work["Units"].map(lambda v: f"{float(v):,.0f}")
+    work["UnitsLabelY"] = work["Units"] * 1.05
 
     bars = (
         alt.Chart(work)
         .mark_bar()
         .encode(
             x=alt.X("PeriodLabel:N", title="Period", sort=order),
-            y=alt.Y("Sales:Q", title="Sales"),
+            y=alt.Y("Sales:Q", title="Sales", scale=alt.Scale(domain=[0, sales_domain_max])),
             tooltip=[
                 alt.Tooltip("PeriodLabel:N", title="Period"),
                 alt.Tooltip("Sales:Q", title="Sales", format=",.2f"),
@@ -1014,20 +1001,20 @@ def _render_sales_units_combo_chart(summary_df: pd.DataFrame):
 
     sales_text = (
         alt.Chart(work)
-        .mark_text(dy=12, baseline="top")
+        .mark_text(dy=12, baseline="top", color=TEXT_LIGHT)
         .encode(
             x=alt.X("PeriodLabel:N", sort=order),
-            y=alt.Y("Sales:Q"),
+            y=alt.Y("Sales:Q", scale=alt.Scale(domain=[0, sales_domain_max])),
             text="SalesLabel:N",
         )
     )
 
     line = (
         alt.Chart(work)
-        .mark_line(point=True, strokeWidth=2.5)
+        .mark_line(point=alt.OverlayMarkDef(color=LINE_CYAN, filled=True, size=70), strokeWidth=2.8, color=LINE_CYAN)
         .encode(
             x=alt.X("PeriodLabel:N", sort=order),
-            y=alt.Y("Units:Q", title="Units"),
+            y=alt.Y("Units:Q", title="Units", scale=alt.Scale(domain=[units_domain_min, units_domain_max])),
             tooltip=[
                 alt.Tooltip("PeriodLabel:N", title="Period"),
                 alt.Tooltip("Units:Q", title="Units", format=",.0f"),
@@ -1037,10 +1024,10 @@ def _render_sales_units_combo_chart(summary_df: pd.DataFrame):
 
     units_text = (
         alt.Chart(work)
-        .mark_text(dy=-14)
+        .mark_text(dy=-14, color=LINE_CYAN, fontWeight="bold")
         .encode(
             x=alt.X("PeriodLabel:N", sort=order),
-            y=alt.Y("Units:Q"),
+            y=alt.Y("UnitsLabelY:Q", scale=alt.Scale(domain=[units_domain_min, units_domain_max])),
             text="UnitsLabel:N",
         )
     )
@@ -1048,8 +1035,13 @@ def _render_sales_units_combo_chart(summary_df: pd.DataFrame):
     chart = alt.layer(bars, sales_text, line, units_text).resolve_scale(
         y="independent"
     ).properties(
-        height=480,
+        height=500,
         title="Sales and Units by Selected Period",
+    ).configure_title(
+        anchor="start",
+        fontSize=16,
+        offset=12,
+        color=TEXT_LIGHT,
     )
 
     st.altair_chart(chart, use_container_width=True)
@@ -1251,7 +1243,7 @@ def _render_quarterly_stacked_altair(df: pd.DataFrame, metric: str):
 
     text = (
         alt.Chart(df)
-        .mark_text(size=10)
+        .mark_text(size=10, color=TEXT_AMBER, fontWeight="bold")
         .encode(
             x=alt.X("PeriodLabel:N", sort=order),
             y=alt.Y("Value:Q", stack="center"),
@@ -1263,6 +1255,11 @@ def _render_quarterly_stacked_altair(df: pd.DataFrame, metric: str):
     chart = (bars + text).properties(
         height=440,
         title=f"{metric} by Quarter, stacked within each selected year",
+    ).configure_title(
+        anchor="start",
+        fontSize=15,
+        offset=12,
+        color=TEXT_LIGHT,
     )
 
     st.altair_chart(chart, use_container_width=True)
@@ -1449,7 +1446,7 @@ def _render_radar_altair(df: pd.DataFrame):
 
     ring_chart = (
         alt.Chart(rings)
-        .mark_arc(fillOpacity=0, strokeOpacity=0.20)
+        .mark_arc(fillOpacity=0, strokeOpacity=0.45, stroke=RING_GRAY)
         .encode(
             theta=alt.Theta(value=360),
             radius=alt.Radius("r:Q", scale=alt.Scale(domain=[0, 1.0], rangeMin=0, rangeMax=180)),
@@ -1466,7 +1463,7 @@ def _render_radar_altair(df: pd.DataFrame):
 
     quarter_text = (
         alt.Chart(quarter_labels)
-        .mark_text(fontSize=12, fontWeight="bold")
+        .mark_text(fontSize=12, fontWeight="bold", color=TEXT_AMBER)
         .encode(
             theta=alt.Theta("AngleDeg:Q", scale=alt.Scale(domain=[0, 360])),
             radius=alt.Radius("Radius:Q", scale=alt.Scale(domain=[0, 1.2], rangeMin=0, rangeMax=200)),
@@ -1476,7 +1473,7 @@ def _render_radar_altair(df: pd.DataFrame):
 
     month_text = (
         alt.Chart(df)
-        .mark_text(fontSize=9)
+        .mark_text(fontSize=9, color=TEXT_TEAL)
         .encode(
             theta=alt.Theta("AngleDeg:Q", scale=alt.Scale(domain=[0, 360])),
             radius=alt.Radius(value=198),
@@ -1491,7 +1488,7 @@ def _render_radar_altair(df: pd.DataFrame):
 
     fill = (
         alt.Chart(df)
-        .mark_area(opacity=0.18)
+        .mark_area(opacity=0.18, color=LINE_CYAN)
         .encode(
             theta=alt.Theta("AngleDeg:Q", scale=alt.Scale(domain=[0, 360])),
             radius=alt.Radius("ScaledSales:Q", scale=alt.Scale(domain=[0, 1.0], rangeMin=0, rangeMax=180)),
@@ -1505,7 +1502,7 @@ def _render_radar_altair(df: pd.DataFrame):
 
     line = (
         alt.Chart(df)
-        .mark_line(point=True, strokeWidth=2.5)
+        .mark_line(point=alt.OverlayMarkDef(color=LINE_CYAN, filled=True, size=60), strokeWidth=2.6, color=LINE_CYAN)
         .encode(
             theta=alt.Theta("AngleDeg:Q", scale=alt.Scale(domain=[0, 360])),
             radius=alt.Radius("ScaledSales:Q", scale=alt.Scale(domain=[0, 1.0], rangeMin=0, rangeMax=180)),
@@ -1519,7 +1516,7 @@ def _render_radar_altair(df: pd.DataFrame):
 
     value_text = (
         alt.Chart(df)
-        .mark_text(fontSize=8, dy=-8)
+        .mark_text(fontSize=8, dy=-8, color=TEXT_LIGHT, fontWeight="bold")
         .encode(
             theta=alt.Theta("AngleDeg:Q", scale=alt.Scale(domain=[0, 360])),
             radius=alt.Radius("ScaledSales:Q", scale=alt.Scale(domain=[0, 1.0], rangeMin=0, rangeMax=180)),
@@ -1538,6 +1535,11 @@ def _render_radar_altair(df: pd.DataFrame):
         width=560,
         height=560,
         title="All-Years Sales Seasonality Radar (Q1 → Q4, months inside each section)",
+    ).configure_title(
+        anchor="start",
+        fontSize=16,
+        offset=12,
+        color=TEXT_LIGHT,
     )
 
     st.altair_chart(chart, use_container_width=True)
@@ -1659,10 +1661,6 @@ def build_visual_analytics_pdf_bytes(
 
     story.append(Paragraph("Sales and ASP by Selected Period", styles["Heading2"]))
     story.append(_fig_to_rl_image(_make_sales_asp_combo_figure(summary_df, "Sales and ASP by Selected Period"), width_inches=9.8))
-    story.append(Spacer(1, 10))
-
-    story.append(Paragraph("Total Units by Selected Period", styles["Heading2"]))
-    story.append(_fig_to_rl_image(_make_single_metric_bar_figure(summary_df, "Units", "Total Units by Selected Period", label_mode="int"), width_inches=9.8))
     story.append(Spacer(1, 10))
 
     story.append(Paragraph("Sales and Units by Selected Period", styles["Heading2"]))
@@ -1788,15 +1786,6 @@ def render_visual_only(ctx: dict):
     st.markdown("### Sales and ASP by Selected Period")
     _render_sales_asp_combo_chart(summary_df)
 
-    st.markdown("### Total Units by Selected Period")
-    _render_sales_or_units_chart(
-        summary_df,
-        value_col="Units",
-        title="Total Units by Selected Period",
-        tooltip_title="Total Units",
-        fmt=",.0f",
-    )
-
     st.markdown("### Sales and Units by Selected Period")
     _render_sales_units_combo_chart(summary_df)
 
@@ -1809,8 +1798,8 @@ def render_visual_only(ctx: dict):
             title="Average Sales per SKU",
             tooltip_title="Average Sales per SKU",
             fmt=",.2f",
-            height=300,
-            width=280,
+            height=330,
+            width=320,
         )
 
     with c_avg_units:
@@ -1820,8 +1809,8 @@ def render_visual_only(ctx: dict):
             title="Average Units per SKU",
             tooltip_title="Average Units per SKU",
             fmt=",.2f",
-            height=300,
-            width=280,
+            height=330,
+            width=320,
         )
 
     if granularity == "Year":
