@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import io
 import math
 
 import altair as alt
@@ -7,6 +8,17 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 import streamlit as st
+from reportlab.lib import colors
+from reportlab.lib.pagesizes import landscape, letter
+from reportlab.lib.styles import getSampleStyleSheet
+from reportlab.platypus import (
+    PageBreak,
+    Paragraph,
+    SimpleDocTemplate,
+    Spacer,
+    Table,
+    TableStyle,
+)
 
 from .shared_core import (
     money,
@@ -783,7 +795,6 @@ def _pie_chart_df(df: pd.DataFrame, metric: str) -> pd.DataFrame:
     total = float(out["Value"].sum()) if not out.empty else 0.0
     out["Pct"] = np.where(total > 0, out["Value"] / total, 0.0)
 
-    # preserve the visible period order from the multiselect
     order_map = {lbl: i for i, lbl in enumerate(df["PeriodLabel"].drop_duplicates().tolist())}
     out["SortOrder"] = out["PeriodLabel"].map(order_map)
     out = out.sort_values(["SortOrder", "PeriodLabel"]).reset_index(drop=True)
@@ -863,8 +874,6 @@ def _quarterly_stacked_df(df: pd.DataFrame, metric: str) -> pd.DataFrame:
 
     out = out.sort_values(["PeriodOrder", "Quarter"]).copy()
     out["Label"] = out["Value"].map(lambda v: _fmt_value(float(v), metric))
-
-    # compute bottom-aligned label positions within each stacked segment
     out["Start"] = out.groupby("PeriodLabel")["Value"].cumsum() - out["Value"]
     out["LabelY"] = out["Start"] + (out["Value"] * 0.18)
     out["ShowLabel"] = np.where(out["Value"] > 0, out["Label"], "")
@@ -1050,6 +1059,150 @@ def _render_radar(df: pd.DataFrame):
     plt.close(fig)
 
 
+def _pdf_table_data(df: pd.DataFrame) -> list[list[str]]:
+    if df is None or df.empty:
+        return [["No data available"]]
+
+    cols = [str(c) for c in df.columns]
+    rows = []
+    for _, r in df.iterrows():
+        rows.append([("" if pd.isna(v) else str(v)) for v in r.tolist()])
+    return [cols] + rows
+
+
+def _pdf_styled_table(df: pd.DataFrame, header_hex: str = "#D9E2F3", col_widths=None) -> Table:
+    data = _pdf_table_data(df)
+    table = Table(data, repeatRows=1, colWidths=col_widths)
+    table.setStyle(
+        TableStyle(
+            [
+                ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor(header_hex)),
+                ("TEXTCOLOR", (0, 0), (-1, 0), colors.black),
+                ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+                ("FONTNAME", (0, 1), (-1, -1), "Helvetica"),
+                ("FONTSIZE", (0, 0), (-1, -1), 8.5),
+                ("LEADING", (0, 0), (-1, -1), 10),
+                ("GRID", (0, 0), (-1, -1), 0.35, colors.grey),
+                ("VALIGN", (0, 0), (-1, -1), "TOP"),
+                ("LEFTPADDING", (0, 0), (-1, -1), 5),
+                ("RIGHTPADDING", (0, 0), (-1, -1), 5),
+                ("TOPPADDING", (0, 0), (-1, -1), 4),
+                ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
+            ]
+        )
+    )
+    return table
+
+
+def build_visual_analytics_pdf_bytes(
+    df_scope: pd.DataFrame,
+    df_vis: pd.DataFrame,
+    df_hist_all: pd.DataFrame,
+    granularity: str,
+    labels: list[str],
+) -> bytes:
+    buf = io.BytesIO()
+    doc = SimpleDocTemplate(
+        buf,
+        pagesize=landscape(letter),
+        leftMargin=24,
+        rightMargin=24,
+        topMargin=24,
+        bottomMargin=24,
+    )
+
+    styles = getSampleStyleSheet()
+    story = []
+
+    title = Paragraph("Multi Month / Year Compare — Visual Analytics", styles["Title"])
+    subtitle = Paragraph(
+        f"Analyze By: {granularity} &nbsp;&nbsp;&nbsp;|&nbsp;&nbsp;&nbsp; Selected: {', '.join(labels)}",
+        styles["Normal"],
+    )
+    story.extend([title, Spacer(1, 6), subtitle, Spacer(1, 14)])
+
+    sales = float(df_vis["Sales"].sum()) if "Sales" in df_vis.columns else 0.0
+    units = float(df_vis["Units"].sum()) if "Units" in df_vis.columns else 0.0
+    asp = sales / units if units else 0.0
+    retailers = int(df_vis["Retailer"].dropna().nunique()) if "Retailer" in df_vis.columns else 0
+    vendors = int(df_vis["Vendor"].dropna().nunique()) if "Vendor" in df_vis.columns else 0
+    skus = int(df_vis["SKU"].dropna().nunique()) if "SKU" in df_vis.columns else 0
+
+    kpi_df = pd.DataFrame(
+        [
+            ["Total Sales", money(sales)],
+            ["Total Units", f"{units:,.0f}"],
+            ["ASP", money(asp)],
+            ["Retailers", f"{retailers:,}"],
+            ["Vendors", f"{vendors:,}"],
+            ["SKUs", f"{skus:,}"],
+        ],
+        columns=["Metric", "Value"],
+    )
+
+    story.append(Paragraph("KPI Summary", styles["Heading2"]))
+    story.append(_pdf_styled_table(kpi_df, header_hex="#D9E2F3", col_widths=[180, 140]))
+    story.append(Spacer(1, 12))
+
+    sales_pie = _pie_chart_df(df_vis, "Sales")
+    units_pie = _pie_chart_df(df_vis, "Units")
+
+    if not sales_pie.empty:
+        show = sales_pie[["PeriodLabel", "Value", "Pct"]].copy()
+        show["Value"] = show["Value"].map(lambda v: money(float(v)))
+        show["Pct"] = show["Pct"].map(lambda v: f"{float(v):.1%}")
+        story.append(Paragraph("Period Share — Sales", styles["Heading2"]))
+        story.append(_pdf_styled_table(show, header_hex="#E2F0D9"))
+        story.append(Spacer(1, 12))
+
+    if not units_pie.empty:
+        show = units_pie[["PeriodLabel", "Value", "Pct"]].copy()
+        show["Value"] = show["Value"].map(lambda v: f"{float(v):,.0f}")
+        show["Pct"] = show["Pct"].map(lambda v: f"{float(v):.1%}")
+        story.append(Paragraph("Period Share — Units", styles["Heading2"]))
+        story.append(_pdf_styled_table(show, header_hex="#FCE4D6"))
+        story.append(Spacer(1, 12))
+
+    if granularity == "Year":
+        q_sales = _quarterly_stacked_df(df_vis, "Sales")
+        if not q_sales.empty:
+            qshow = q_sales[["PeriodLabel", "Quarter", "Value"]].copy()
+            qshow["Value"] = qshow["Value"].map(lambda v: money(float(v)))
+            story.append(Paragraph("Quarterly Sales", styles["Heading2"]))
+            story.append(_pdf_styled_table(qshow, header_hex="#DDEBF7"))
+            story.append(Spacer(1, 12))
+
+        q_units = _quarterly_stacked_df(df_vis, "Units")
+        if not q_units.empty:
+            qshow = q_units[["PeriodLabel", "Quarter", "Value"]].copy()
+            qshow["Value"] = qshow["Value"].map(lambda v: f"{float(v):,.0f}")
+            story.append(Paragraph("Quarterly Units", styles["Heading2"]))
+            story.append(_pdf_styled_table(qshow, header_hex="#EDEDED"))
+            story.append(Spacer(1, 12))
+
+    for dim in ["Retailer", "Vendor", "SKU"]:
+        top_df = _top2_per_period(df_vis, dim, "Sales")
+        if top_df.empty:
+            continue
+        show = top_df[["PeriodLabel", "Rank", "Entity", "Value"]].copy()
+        show["Value"] = show["Value"].map(lambda v: money(float(v)))
+        story.append(Paragraph(f"Biggest 2 {dim}s by Selected Period", styles["Heading2"]))
+        story.append(_pdf_styled_table(show, header_hex="#FFF2CC"))
+        story.append(Spacer(1, 12))
+
+    radar_df = _all_years_radar_month_df(df_hist_all)
+    if not radar_df.empty:
+        show = radar_df[["Quarter", "Month", "TotalSales", "Rank"]].copy()
+        show["TotalSales"] = show["TotalSales"].map(lambda v: money(float(v)))
+        story.append(PageBreak())
+        story.append(Paragraph("All-Years Seasonality Radar Support Table", styles["Heading2"]))
+        story.append(_pdf_styled_table(show, header_hex="#E4DFEC"))
+        story.append(Spacer(1, 12))
+
+    doc.build(story)
+    return buf.getvalue()
+
+
 def render_visual_only(ctx: dict):
     st.subheader("Multi Month / Year Compare • Visual Analytics")
     st.caption("Chart-first view for selected years or months.")
@@ -1100,6 +1253,25 @@ def render_visual_only(ctx: dict):
     if df_vis.empty:
         st.info("No data available for the selected visual periods.")
         return
+
+    try:
+        pdf_bytes = build_visual_analytics_pdf_bytes(
+            df_scope=df_scope,
+            df_vis=df_vis,
+            df_hist_all=df_hist_all,
+            granularity=granularity,
+            labels=ordered_labels,
+        )
+        st.download_button(
+            "Download Visual Analytics PDF",
+            data=pdf_bytes,
+            file_name=f"multi_compare_visual_analytics_{granularity.lower()}.pdf",
+            mime="application/pdf",
+            key="download_multi_compare_visual_pdf",
+            use_container_width=False,
+        )
+    except Exception as e:
+        st.warning(f"PDF export unavailable: {e}")
 
     st.markdown("### Period Share")
     c_sales, c_units = st.columns(2)
@@ -1152,6 +1324,17 @@ def render(ctx: dict):
 
     if df_scope.empty:
         st.info("No data available with the current filters.")
+        return
+
+    view_mode = st.radio(
+        "View",
+        ["Table Analytics", "Visual Analytics"],
+        horizontal=True,
+        key="multi_compare_view_mode",
+    )
+
+    if view_mode == "Visual Analytics":
+        render_visual_only(ctx)
         return
 
     c1, c2, c3, c4, c5 = st.columns([1.0, 2.2, 1.2, 1.0, 1.0])
