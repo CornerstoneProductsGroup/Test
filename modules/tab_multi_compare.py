@@ -8,16 +8,15 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 import streamlit as st
-from reportlab.lib import colors
 from reportlab.lib.pagesizes import landscape, letter
 from reportlab.lib.styles import getSampleStyleSheet
+from reportlab.lib.units import inch
 from reportlab.platypus import (
+    Image as RLImage,
     PageBreak,
     Paragraph,
     SimpleDocTemplate,
     Spacer,
-    Table,
-    TableStyle,
 )
 
 from .shared_core import (
@@ -937,6 +936,7 @@ def _top2_per_period(df: pd.DataFrame, dim: str, metric: str = "Sales") -> pd.Da
     out["PeriodOrder"] = out["PeriodLabel"].map(p_order)
 
     out = out.sort_values(["PeriodOrder", "Rank", "Value"], ascending=[True, True, False]).reset_index(drop=True)
+    out["YLabel"] = out["PeriodLabel"].astype(str) + " • #"
     out["YLabel"] = out["PeriodLabel"].astype(str) + " • #" + out["Rank"].astype(str) + " • " + out["Entity"].astype(str)
     out["ValueLabel"] = out["Value"].map(money)
     return out
@@ -1059,39 +1059,151 @@ def _render_radar(df: pd.DataFrame):
     plt.close(fig)
 
 
-def _pdf_table_data(df: pd.DataFrame) -> list[list[str]]:
-    if df is None or df.empty:
-        return [["No data available"]]
+def _fig_to_rl_image(fig, width_inches: float = 9.6) -> RLImage:
+    buf = io.BytesIO()
+    fig.savefig(buf, format="png", dpi=180, bbox_inches="tight")
+    plt.close(fig)
+    buf.seek(0)
 
-    cols = [str(c) for c in df.columns]
-    rows = []
-    for _, r in df.iterrows():
-        rows.append([("" if pd.isna(v) else str(v)) for v in r.tolist()])
-    return [cols] + rows
+    img = RLImage(buf)
+    aspect = img.imageHeight / float(img.imageWidth) if img.imageWidth else 0.6
+    img.drawWidth = width_inches * inch
+    img.drawHeight = img.drawWidth * aspect
+    return img
 
 
-def _pdf_styled_table(df: pd.DataFrame, header_hex: str = "#D9E2F3", col_widths=None) -> Table:
-    data = _pdf_table_data(df)
-    table = Table(data, repeatRows=1, colWidths=col_widths)
-    table.setStyle(
-        TableStyle(
-            [
-                ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor(header_hex)),
-                ("TEXTCOLOR", (0, 0), (-1, 0), colors.black),
-                ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
-                ("FONTNAME", (0, 1), (-1, -1), "Helvetica"),
-                ("FONTSIZE", (0, 0), (-1, -1), 8.5),
-                ("LEADING", (0, 0), (-1, -1), 10),
-                ("GRID", (0, 0), (-1, -1), 0.35, colors.grey),
-                ("VALIGN", (0, 0), (-1, -1), "TOP"),
-                ("LEFTPADDING", (0, 0), (-1, -1), 5),
-                ("RIGHTPADDING", (0, 0), (-1, -1), 5),
-                ("TOPPADDING", (0, 0), (-1, -1), 4),
-                ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
-            ]
-        )
+def _make_pdf_pie_figure(df: pd.DataFrame, metric: str, title: str):
+    fig, ax = plt.subplots(figsize=(8.8, 5.8))
+    if df.empty:
+        ax.text(0.5, 0.5, f"No {metric.lower()} data available", ha="center", va="center")
+        ax.axis("off")
+        fig.suptitle(title, fontsize=14, fontweight="bold")
+        return fig
+
+    labels = df["PeriodLabel"].astype(str).tolist()
+    values = pd.to_numeric(df["Value"], errors="coerce").fillna(0.0).tolist()
+
+    if sum(values) <= 0:
+        ax.text(0.5, 0.5, f"No {metric.lower()} data available", ha="center", va="center")
+        ax.axis("off")
+        fig.suptitle(title, fontsize=14, fontweight="bold")
+        return fig
+
+    ax.pie(
+        values,
+        labels=labels,
+        autopct="%1.1f%%",
+        startangle=90,
+        wedgeprops={"linewidth": 1, "edgecolor": "white"},
+        textprops={"fontsize": 10},
     )
-    return table
+    ax.axis("equal")
+    fig.suptitle(title, fontsize=14, fontweight="bold")
+    return fig
+
+
+def _make_pdf_quarterly_stacked_figure(df: pd.DataFrame, metric: str):
+    fig, ax = plt.subplots(figsize=(9.6, 5.8))
+    title = f"{metric} by Quarter, stacked within each selected year"
+
+    if df.empty:
+        ax.text(0.5, 0.5, "No quarterly data available", ha="center", va="center")
+        ax.axis("off")
+        fig.suptitle(title, fontsize=14, fontweight="bold")
+        return fig
+
+    work = df.copy()
+    work["Value"] = pd.to_numeric(work["Value"], errors="coerce").fillna(0.0)
+
+    periods = list(work["PeriodLabel"].drop_duplicates())
+    quarters = ["Q1", "Q2", "Q3", "Q4"]
+
+    pivot = (
+        work.pivot_table(index="PeriodLabel", columns="Quarter", values="Value", aggfunc="sum", fill_value=0.0)
+        .reindex(index=periods, columns=quarters, fill_value=0.0)
+    )
+
+    x = np.arange(len(pivot.index))
+    bottom = np.zeros(len(pivot.index))
+
+    for q in quarters:
+        vals = pivot[q].to_numpy(dtype=float)
+        ax.bar(x, vals, bottom=bottom, label=q)
+        bottom += vals
+
+    ax.set_xticks(x)
+    ax.set_xticklabels(pivot.index.tolist(), rotation=0)
+    ax.set_ylabel(metric)
+    ax.set_xlabel("Period")
+    ax.legend(title="")
+    ax.set_title(title, fontsize=14, fontweight="bold")
+    fig.tight_layout()
+    return fig
+
+
+def _make_pdf_top2_bar_figure(df: pd.DataFrame, title: str):
+    fig, ax = plt.subplots(figsize=(10.2, max(4.2, 0.45 * max(len(df), 4))))
+
+    if df.empty:
+        ax.text(0.5, 0.5, "No data available", ha="center", va="center")
+        ax.axis("off")
+        fig.suptitle(title, fontsize=14, fontweight="bold")
+        return fig
+
+    work = df.copy()
+    work["Value"] = pd.to_numeric(work["Value"], errors="coerce").fillna(0.0)
+    work = work.sort_values(["PeriodOrder", "Rank", "Value"], ascending=[True, True, False]).reset_index(drop=True)
+
+    labels = work["YLabel"].astype(str).tolist()
+    values = work["Value"].tolist()
+    y = np.arange(len(work))
+
+    ax.barh(y, values)
+    ax.set_yticks(y)
+    ax.set_yticklabels(labels, fontsize=9)
+    ax.invert_yaxis()
+    ax.set_xlabel("Sales")
+    ax.set_title(title, fontsize=14, fontweight="bold")
+
+    xmax = max(values) if values else 0
+    pad = xmax * 0.02 if xmax > 0 else 1.0
+    for yi, v in zip(y, values):
+        ax.text(v + pad, yi, money(float(v)), va="center", fontsize=9)
+
+    fig.tight_layout()
+    return fig
+
+
+def _make_pdf_radar_figure(df: pd.DataFrame):
+    if df.empty:
+        fig, ax = plt.subplots(figsize=(8.5, 8.5))
+        ax.text(0.5, 0.5, "No radar data available", ha="center", va="center")
+        ax.axis("off")
+        fig.suptitle("All-Years Sales Seasonality Radar (Jan → Dec)", fontsize=14, fontweight="bold")
+        return fig
+
+    labels = df["Label"].tolist()
+    values = df["ScaledSales"].tolist()
+
+    angles = [n / float(len(labels)) * 2 * math.pi for n in range(len(labels))]
+    angles += angles[:1]
+    values += values[:1]
+
+    fig = plt.figure(figsize=(8.5, 8.5))
+    ax = plt.subplot(111, polar=True)
+    ax.set_theta_offset(math.pi / 2)
+    ax.set_theta_direction(-1)
+
+    plt.xticks(angles[:-1], labels, fontsize=9)
+    ax.set_rlabel_position(0)
+    ax.set_yticks([0.25, 0.50, 0.75, 1.00])
+    ax.set_yticklabels(["25%", "50%", "75%", "100%"], fontsize=8)
+    ax.set_ylim(0, 1.0)
+
+    ax.plot(angles, values, linewidth=2)
+    ax.fill(angles, values, alpha=0.20)
+    ax.set_title("All-Years Sales Seasonality Radar (Jan → Dec)", pad=24, fontsize=14, fontweight="bold")
+    return fig
 
 
 def build_visual_analytics_pdf_bytes(
@@ -1119,7 +1231,6 @@ def build_visual_analytics_pdf_bytes(
         f"Analyze By: {granularity} &nbsp;&nbsp;&nbsp;|&nbsp;&nbsp;&nbsp; Selected: {', '.join(labels)}",
         styles["Normal"],
     )
-    story.extend([title, Spacer(1, 6), subtitle, Spacer(1, 14)])
 
     sales = float(df_vis["Sales"].sum()) if "Sales" in df_vis.columns else 0.0
     units = float(df_vis["Units"].sum()) if "Units" in df_vis.columns else 0.0
@@ -1128,76 +1239,63 @@ def build_visual_analytics_pdf_bytes(
     vendors = int(df_vis["Vendor"].dropna().nunique()) if "Vendor" in df_vis.columns else 0
     skus = int(df_vis["SKU"].dropna().nunique()) if "SKU" in df_vis.columns else 0
 
-    kpi_df = pd.DataFrame(
-        [
-            ["Total Sales", money(sales)],
-            ["Total Units", f"{units:,.0f}"],
-            ["ASP", money(asp)],
-            ["Retailers", f"{retailers:,}"],
-            ["Vendors", f"{vendors:,}"],
-            ["SKUs", f"{skus:,}"],
-        ],
-        columns=["Metric", "Value"],
+    summary = Paragraph(
+        f"<b>Total Sales:</b> {money(sales)}"
+        f"&nbsp;&nbsp;&nbsp;&nbsp; <b>Total Units:</b> {units:,.0f}"
+        f"&nbsp;&nbsp;&nbsp;&nbsp; <b>ASP:</b> {money(asp)}"
+        f"<br/><b>Retailers:</b> {retailers:,}"
+        f"&nbsp;&nbsp;&nbsp;&nbsp; <b>Vendors:</b> {vendors:,}"
+        f"&nbsp;&nbsp;&nbsp;&nbsp; <b>SKUs:</b> {skus:,}",
+        styles["BodyText"],
     )
 
-    story.append(Paragraph("KPI Summary", styles["Heading2"]))
-    story.append(_pdf_styled_table(kpi_df, header_hex="#D9E2F3", col_widths=[180, 140]))
-    story.append(Spacer(1, 12))
+    story.extend([title, Spacer(1, 6), subtitle, Spacer(1, 8), summary, Spacer(1, 16)])
 
     sales_pie = _pie_chart_df(df_vis, "Sales")
     units_pie = _pie_chart_df(df_vis, "Units")
 
-    if not sales_pie.empty:
-        show = sales_pie[["PeriodLabel", "Value", "Pct"]].copy()
-        show["Value"] = show["Value"].map(lambda v: money(float(v)))
-        show["Pct"] = show["Pct"].map(lambda v: f"{float(v):.1%}")
-        story.append(Paragraph("Period Share — Sales", styles["Heading2"]))
-        story.append(_pdf_styled_table(show, header_hex="#E2F0D9"))
-        story.append(Spacer(1, 12))
+    story.append(Paragraph("Period Share — Sales", styles["Heading2"]))
+    story.append(_fig_to_rl_image(_make_pdf_pie_figure(sales_pie, "Sales", "Total Sales by Selected Period"), width_inches=9.6))
+    story.append(Spacer(1, 14))
 
-    if not units_pie.empty:
-        show = units_pie[["PeriodLabel", "Value", "Pct"]].copy()
-        show["Value"] = show["Value"].map(lambda v: f"{float(v):,.0f}")
-        show["Pct"] = show["Pct"].map(lambda v: f"{float(v):.1%}")
-        story.append(Paragraph("Period Share — Units", styles["Heading2"]))
-        story.append(_pdf_styled_table(show, header_hex="#FCE4D6"))
-        story.append(Spacer(1, 12))
+    story.append(Paragraph("Period Share — Units", styles["Heading2"]))
+    story.append(_fig_to_rl_image(_make_pdf_pie_figure(units_pie, "Units", "Total Units by Selected Period"), width_inches=9.6))
+    story.append(Spacer(1, 14))
 
     if granularity == "Year":
         q_sales = _quarterly_stacked_df(df_vis, "Sales")
-        if not q_sales.empty:
-            qshow = q_sales[["PeriodLabel", "Quarter", "Value"]].copy()
-            qshow["Value"] = qshow["Value"].map(lambda v: money(float(v)))
-            story.append(Paragraph("Quarterly Sales", styles["Heading2"]))
-            story.append(_pdf_styled_table(qshow, header_hex="#DDEBF7"))
-            story.append(Spacer(1, 12))
-
         q_units = _quarterly_stacked_df(df_vis, "Units")
-        if not q_units.empty:
-            qshow = q_units[["PeriodLabel", "Quarter", "Value"]].copy()
-            qshow["Value"] = qshow["Value"].map(lambda v: f"{float(v):,.0f}")
-            story.append(Paragraph("Quarterly Units", styles["Heading2"]))
-            story.append(_pdf_styled_table(qshow, header_hex="#EDEDED"))
-            story.append(Spacer(1, 12))
 
-    for dim in ["Retailer", "Vendor", "SKU"]:
-        top_df = _top2_per_period(df_vis, dim, "Sales")
-        if top_df.empty:
-            continue
-        show = top_df[["PeriodLabel", "Rank", "Entity", "Value"]].copy()
-        show["Value"] = show["Value"].map(lambda v: money(float(v)))
-        story.append(Paragraph(f"Biggest 2 {dim}s by Selected Period", styles["Heading2"]))
-        story.append(_pdf_styled_table(show, header_hex="#FFF2CC"))
-        story.append(Spacer(1, 12))
+        story.append(PageBreak())
+        story.append(Paragraph("Quarterly Stacked Bars — Sales", styles["Heading2"]))
+        story.append(_fig_to_rl_image(_make_pdf_quarterly_stacked_figure(q_sales, "Sales"), width_inches=9.8))
+        story.append(Spacer(1, 14))
+
+        story.append(Paragraph("Quarterly Stacked Bars — Units", styles["Heading2"]))
+        story.append(_fig_to_rl_image(_make_pdf_quarterly_stacked_figure(q_units, "Units"), width_inches=9.8))
+        story.append(Spacer(1, 14))
+
+    top_retailer = _top2_per_period(df_vis, "Retailer", "Sales")
+    top_vendor = _top2_per_period(df_vis, "Vendor", "Sales")
+    top_sku = _top2_per_period(df_vis, "SKU", "Sales")
+
+    story.append(PageBreak())
+    story.append(Paragraph("Biggest 2 Retailers by Selected Period", styles["Heading2"]))
+    story.append(_fig_to_rl_image(_make_pdf_top2_bar_figure(top_retailer, "Biggest 2 Retailers by Selected Period"), width_inches=9.8))
+    story.append(Spacer(1, 14))
+
+    story.append(Paragraph("Biggest 2 Vendors by Selected Period", styles["Heading2"]))
+    story.append(_fig_to_rl_image(_make_pdf_top2_bar_figure(top_vendor, "Biggest 2 Vendors by Selected Period"), width_inches=9.8))
+    story.append(Spacer(1, 14))
+
+    story.append(Paragraph("Biggest 2 SKUs by Selected Period", styles["Heading2"]))
+    story.append(_fig_to_rl_image(_make_pdf_top2_bar_figure(top_sku, "Biggest 2 SKUs by Selected Period"), width_inches=9.8))
+    story.append(Spacer(1, 14))
 
     radar_df = _all_years_radar_month_df(df_hist_all)
-    if not radar_df.empty:
-        show = radar_df[["Quarter", "Month", "TotalSales", "Rank"]].copy()
-        show["TotalSales"] = show["TotalSales"].map(lambda v: money(float(v)))
-        story.append(PageBreak())
-        story.append(Paragraph("All-Years Seasonality Radar Support Table", styles["Heading2"]))
-        story.append(_pdf_styled_table(show, header_hex="#E4DFEC"))
-        story.append(Spacer(1, 12))
+    story.append(PageBreak())
+    story.append(Paragraph("All-Years Seasonality Radar", styles["Heading2"]))
+    story.append(_fig_to_rl_image(_make_pdf_radar_figure(radar_df), width_inches=7.4))
 
     doc.build(story)
     return buf.getvalue()
@@ -1324,17 +1422,6 @@ def render(ctx: dict):
 
     if df_scope.empty:
         st.info("No data available with the current filters.")
-        return
-
-    view_mode = st.radio(
-        "View",
-        ["Table Analytics", "Visual Analytics"],
-        horizontal=True,
-        key="multi_compare_view_mode",
-    )
-
-    if view_mode == "Visual Analytics":
-        render_visual_only(ctx)
         return
 
     c1, c2, c3, c4, c5 = st.columns([1.0, 2.2, 1.2, 1.0, 1.0])
