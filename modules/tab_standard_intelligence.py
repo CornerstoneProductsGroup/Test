@@ -861,12 +861,17 @@ def render_visual_only(ctx: dict):
     a_lbl = ctx["a_lbl"]
     b_lbl = ctx["b_lbl"]
     compare_mode = ctx["compare_mode"]
+    driver_level = ctx["driver_level"]
 
     st.subheader("Standard Intelligence • Visual Analytics")
 
     if compare_mode == "None":
         st.info("Select a comparison mode to use Standard Intelligence visual analytics.")
         return
+
+    BAR_COLOR = "#1f77b4"
+    POS_TEXT = "#2e7d32"
+    NEG_TEXT = "#c62828"
 
     def _totals_df(metric: str) -> pd.DataFrame:
         cur = float(kA.get(metric, 0.0))
@@ -891,22 +896,20 @@ def render_visual_only(ctx: dict):
 
         rules = (
             alt.Chart(df)
-            .mark_rule(strokeWidth=2.5)
+            .mark_rule(strokeWidth=2.5, color=BAR_COLOR)
             .encode(
                 y=alt.Y("Period:N", sort=df["Period"].tolist(), title=""),
                 x=alt.X("Zero:Q", scale=alt.Scale(domain=[0, xmax]), title=x_title),
                 x2="Value:Q",
-                color=alt.Color("Period:N", title=""),
             )
         )
 
         dots = (
             alt.Chart(df)
-            .mark_circle(size=180)
+            .mark_circle(size=180, color=BAR_COLOR)
             .encode(
                 y=alt.Y("Period:N", sort=df["Period"].tolist(), title=""),
                 x=alt.X("Value:Q", scale=alt.Scale(domain=[0, xmax]), title=x_title),
-                color=alt.Color("Period:N", title=""),
                 tooltip=[
                     alt.Tooltip("Period:N", title="Period"),
                     alt.Tooltip("Value:Q", title=x_title, format=",.2f" if x_title == "Sales" else ",.0f"),
@@ -916,12 +919,11 @@ def render_visual_only(ctx: dict):
 
         text = (
             alt.Chart(df)
-            .mark_text(align="left", dx=8, size=12)
+            .mark_text(align="left", dx=8, size=12, color=BAR_COLOR)
             .encode(
                 y=alt.Y("Period:N", sort=df["Period"].tolist(), title=""),
                 x=alt.X("Value:Q", scale=alt.Scale(domain=[0, xmax]), title=x_title),
                 text="Label:N",
-                color=alt.Color("Period:N", legend=None),
             )
         )
 
@@ -954,7 +956,13 @@ def render_visual_only(ctx: dict):
         out["Entity"] = out[dim].astype(str)
         return out
 
-    def _render_lollipop_list(df: pd.DataFrame, y_col: str, value_col: str, title: str):
+    def _render_lollipop_list(
+        df: pd.DataFrame,
+        y_col: str,
+        value_col: str,
+        title: str,
+        negative_side: bool = False,
+    ):
         if df.empty:
             st.info(f"No data available for {title.lower()}.")
             return
@@ -969,9 +977,9 @@ def render_visual_only(ctx: dict):
 
         rules = (
             alt.Chart(df)
-            .mark_rule(strokeWidth=2.5)
+            .mark_rule(strokeWidth=2.5, color=BAR_COLOR)
             .encode(
-                y=alt.Y(f"{y_col}:N", sort=None, title=""),
+                y=alt.Y(f"{y_col}:N", sort=None, title="", axis=alt.Axis(labelLimit=260)),
                 x=alt.X("Zero:Q", scale=alt.Scale(domain=x_domain), title="Sales Change"),
                 x2=f"{value_col}:Q",
                 tooltip=[
@@ -983,32 +991,33 @@ def render_visual_only(ctx: dict):
 
         dots = (
             alt.Chart(df)
-            .mark_circle(size=150)
+            .mark_circle(size=150, color=BAR_COLOR)
             .encode(
-                y=alt.Y(f"{y_col}:N", sort=None, title=""),
+                y=alt.Y(f"{y_col}:N", sort=None, title="", axis=alt.Axis(labelLimit=260)),
                 x=alt.X(f"{value_col}:Q", scale=alt.Scale(domain=x_domain), title="Sales Change"),
-                color=alt.condition(
-                    alt.datum[value_col] >= 0,
-                    alt.value("#2e7d32"),
-                    alt.value("#c62828"),
-                ),
             )
         )
 
-        text = (
-            alt.Chart(df)
-            .mark_text(dx=8, align="left", size=11)
-            .encode(
-                y=alt.Y(f"{y_col}:N", sort=None, title=""),
-                x=alt.X(f"{value_col}:Q", scale=alt.Scale(domain=x_domain), title="Sales Change"),
-                text="Label:N",
-                color=alt.condition(
-                    alt.datum[value_col] >= 0,
-                    alt.value("#2e7d32"),
-                    alt.value("#c62828"),
-                ),
+        if negative_side:
+            text = (
+                alt.Chart(df)
+                .mark_text(dx=-8, align="right", size=11, color=NEG_TEXT)
+                .encode(
+                    y=alt.Y(f"{y_col}:N", sort=None, title="", axis=alt.Axis(labelLimit=260)),
+                    x=alt.X(f"{value_col}:Q", scale=alt.Scale(domain=x_domain), title="Sales Change"),
+                    text="Label:N",
+                )
             )
-        )
+        else:
+            text = (
+                alt.Chart(df)
+                .mark_text(dx=8, align="left", size=11, color=POS_TEXT)
+                .encode(
+                    y=alt.Y(f"{y_col}:N", sort=None, title="", axis=alt.Axis(labelLimit=260)),
+                    x=alt.X(f"{value_col}:Q", scale=alt.Scale(domain=x_domain), title="Sales Change"),
+                    text="Label:N",
+                )
+            )
 
         st.altair_chart((rules + dots + text).properties(height=max(250, len(df) * 36), title=title), use_container_width=True)
 
@@ -1035,9 +1044,9 @@ def render_visual_only(ctx: dict):
 
         rules = (
             alt.Chart(long_df)
-            .mark_rule(strokeWidth=2.5)
+            .mark_rule(strokeWidth=2.5, color=BAR_COLOR)
             .encode(
-                y=alt.Y("RowLabel:N", sort=None, title=""),
+                y=alt.Y("RowLabel:N", sort=None, title="", axis=alt.Axis(labelLimit=420, labelFontSize=11)),
                 x=alt.X("Zero:Q", scale=alt.Scale(domain=[0, xmax]), title="Sales"),
                 x2="Value:Q",
                 color=alt.Color("Period:N", title=""),
@@ -1048,7 +1057,7 @@ def render_visual_only(ctx: dict):
             alt.Chart(long_df)
             .mark_circle(size=150)
             .encode(
-                y=alt.Y("RowLabel:N", sort=None, title=""),
+                y=alt.Y("RowLabel:N", sort=None, title="", axis=alt.Axis(labelLimit=420, labelFontSize=11)),
                 x=alt.X("Value:Q", scale=alt.Scale(domain=[0, xmax]), title="Sales"),
                 color=alt.Color("Period:N", title=""),
                 tooltip=[
@@ -1063,14 +1072,17 @@ def render_visual_only(ctx: dict):
             alt.Chart(long_df)
             .mark_text(dx=8, align="left", size=11)
             .encode(
-                y=alt.Y("RowLabel:N", sort=None, title=""),
+                y=alt.Y("RowLabel:N", sort=None, title="", axis=alt.Axis(labelLimit=420, labelFontSize=11)),
                 x=alt.X("Value:Q", scale=alt.Scale(domain=[0, xmax]), title="Sales"),
                 text="Label:N",
                 color=alt.Color("Period:N", legend=None),
             )
         )
 
-        st.altair_chart((rules + dots + text).properties(height=max(220, len(long_df) * 32), title=title), use_container_width=True)
+        st.altair_chart(
+            (rules + dots + text).properties(height=max(220, len(long_df) * 34), title=title),
+            use_container_width=True,
+        )
 
     st.markdown("### Totals")
     t1, t2 = st.columns(2)
@@ -1080,7 +1092,7 @@ def render_visual_only(ctx: dict):
         _render_total_lollipop(_totals_df("Units"), "Total Units • Current vs Compare", "Units")
 
     st.markdown("### Contributors")
-    contrib_df = _contributors_df(ctx["driver_level"])
+    contrib_df = _contributors_df(driver_level)
     if contrib_df.empty:
         st.info("No contributor data available.")
     else:
@@ -1089,9 +1101,9 @@ def render_visual_only(ctx: dict):
 
         c1, c2 = st.columns(2)
         with c1:
-            _render_lollipop_list(pos, ctx["driver_level"], "Sales_Δ", "Top Positive Contributors")
+            _render_lollipop_list(pos, driver_level, "Sales_Δ", "Top Positive Contributors", negative_side=False)
         with c2:
-            _render_lollipop_list(neg, ctx["driver_level"], "Sales_Δ", "Top Negative Contributors")
+            _render_lollipop_list(neg, driver_level, "Sales_Δ", "Top Negative Contributors", negative_side=True)
 
     st.markdown("### SKU Movers")
     sku_df = _sku_increase_decline_df()
@@ -1100,9 +1112,9 @@ def render_visual_only(ctx: dict):
 
     s1, s2 = st.columns(2)
     with s1:
-        _render_lollipop_list(inc, "SKU", "Sales_Δ", "Top Increasing SKUs")
+        _render_lollipop_list(inc, "SKU", "Sales_Δ", "Top Increasing SKUs", negative_side=False)
     with s2:
-        _render_lollipop_list(dec, "SKU", "Sales_Δ", "Top Declining SKUs")
+        _render_lollipop_list(dec, "SKU", "Sales_Δ", "Top Declining SKUs", negative_side=True)
 
     st.markdown("### Top 2 Compared Between Current and Compare")
     r1, r2 = st.columns(2)
