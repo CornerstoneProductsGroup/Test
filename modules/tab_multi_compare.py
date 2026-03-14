@@ -1470,12 +1470,9 @@ def _all_years_radar_month_df(df_hist: pd.DataFrame) -> pd.DataFrame:
     out["EndDeg"] = out["MonthNum"] * 30
     out["MidDeg"] = out["StartDeg"] + 15
 
-    # Outer rings for labels
-    out["MonthLabelR"] = 1.13
-    out["QuarterLabelR"] = 1.30
-
-    # Place sales text near the middle of each slice radius
-    out["ValueLabelR"] = np.where(out["ScaledSales"] > 0.08, out["ScaledSales"] * 0.55, 0.10)
+    out["MonthLabelR"] = 1.24
+    out["QuarterLabelR"] = 1.42
+    out["ValueLabelR"] = np.where(out["ScaledSales"] > 0.08, out["ScaledSales"] * 0.58, 0.12)
 
     out["SalesLabel"] = out["TotalSales"].map(lambda v: money(float(v)))
 
@@ -1494,18 +1491,19 @@ def _render_radar_altair(df: pd.DataFrame):
             "EndDeg": [90, 180, 270, 360],
             "QuarterMidDeg": [45, 135, 225, 315],
             "RadiusFull": [1.0, 1.0, 1.0, 1.0],
-            "QuarterLabelR": [1.28, 1.28, 1.28, 1.28],
+            "QuarterLabelR": [1.40, 1.40, 1.40, 1.40],
         }
     )
 
-    rings = pd.DataFrame({"r": [0.25, 0.50, 0.75, 1.00]})
+    rings = pd.DataFrame({"r": [0.20, 0.40, 0.60, 0.80, 1.00]})
+    radius_scale = alt.Scale(domain=[0, 1.45], rangeMin=0, rangeMax=320)
 
     ring_chart = (
         alt.Chart(rings)
         .mark_arc(fillOpacity=0, stroke=RING_GRAY, strokeOpacity=0.55, strokeWidth=1.1)
         .encode(
             theta=alt.Theta(value=360),
-            radius=alt.Radius("r:Q", scale=alt.Scale(domain=[0, 1.35], rangeMin=0, rangeMax=250)),
+            radius=alt.Radius("r:Q", scale=radius_scale),
         )
     )
 
@@ -1515,7 +1513,7 @@ def _render_radar_altair(df: pd.DataFrame):
         .encode(
             theta=alt.Theta("StartDeg:Q", scale=alt.Scale(domain=[0, 360])),
             theta2="EndDeg:Q",
-            radius=alt.Radius("RadiusFull:Q", scale=alt.Scale(domain=[0, 1.35], rangeMin=0, rangeMax=250)),
+            radius=alt.Radius("RadiusFull:Q", scale=radius_scale),
         )
     )
 
@@ -1525,7 +1523,7 @@ def _render_radar_altair(df: pd.DataFrame):
         .encode(
             theta=alt.Theta("StartDeg:Q", scale=alt.Scale(domain=[0, 360])),
             theta2="EndDeg:Q",
-            radius=alt.Radius("ScaledSales:Q", scale=alt.Scale(domain=[0, 1.35], rangeMin=0, rangeMax=250)),
+            radius=alt.Radius("ScaledSales:Q", scale=radius_scale),
             tooltip=[
                 alt.Tooltip("Quarter:N", title="Quarter"),
                 alt.Tooltip("Month:N", title="Month"),
@@ -1536,30 +1534,30 @@ def _render_radar_altair(df: pd.DataFrame):
 
     month_names = (
         alt.Chart(df)
-        .mark_text(fontSize=10, color=TEXT_TEAL)
+        .mark_text(fontSize=11, color=TEXT_TEAL)
         .encode(
             theta=alt.Theta("MidDeg:Q", scale=alt.Scale(domain=[0, 360])),
-            radius=alt.Radius("MonthLabelR:Q", scale=alt.Scale(domain=[0, 1.35], rangeMin=0, rangeMax=250)),
+            radius=alt.Radius("MonthLabelR:Q", scale=radius_scale),
             text="Month:N",
         )
     )
 
     quarter_names = (
         alt.Chart(quarter_slices)
-        .mark_text(fontSize=13, fontWeight="bold", color=TEXT_AMBER)
+        .mark_text(fontSize=14, fontWeight="bold", color=TEXT_AMBER)
         .encode(
             theta=alt.Theta("QuarterMidDeg:Q", scale=alt.Scale(domain=[0, 360])),
-            radius=alt.Radius("QuarterLabelR:Q", scale=alt.Scale(domain=[0, 1.35], rangeMin=0, rangeMax=250)),
+            radius=alt.Radius("QuarterLabelR:Q", scale=radius_scale),
             text="Quarter:N",
         )
     )
 
     value_labels = (
         alt.Chart(df)
-        .mark_text(fontSize=8, color=TEXT_BLACK, fontWeight="bold")
+        .mark_text(fontSize=9, color=TEXT_BLACK, fontWeight="bold")
         .encode(
             theta=alt.Theta("MidDeg:Q", scale=alt.Scale(domain=[0, 360])),
-            radius=alt.Radius("ValueLabelR:Q", scale=alt.Scale(domain=[0, 1.35], rangeMin=0, rangeMax=250)),
+            radius=alt.Radius("ValueLabelR:Q", scale=radius_scale),
             text="SalesLabel:N",
         )
     )
@@ -1572,8 +1570,8 @@ def _render_radar_altair(df: pd.DataFrame):
         month_names,
         quarter_names,
     ).properties(
-        width=700,
-        height=700,
+        width=820,
+        height=820,
         title="All-Years Sales Seasonality Radar (January at top, clockwise)",
     ).configure_title(
         anchor="start",
