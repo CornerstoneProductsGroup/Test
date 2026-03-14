@@ -908,7 +908,16 @@ def _render_single_metric_bar_chart(
         )
     )
 
-    chart = (bars + text).properties(height=height, width=width, title=title)
+    chart = (bars + text).properties(
+        height=height,
+        width=width,
+        title=title,
+    ).configure_title(
+        anchor="start",
+        fontSize=14,
+        offset=12,
+    )
+
     st.altair_chart(chart, use_container_width=True)
 
 
@@ -948,7 +957,7 @@ def _render_sales_asp_combo_chart(summary_df: pd.DataFrame):
 
     line = (
         alt.Chart(work)
-        .mark_line(point=True)
+        .mark_line(point=True, strokeWidth=2.5)
         .encode(
             x=alt.X("PeriodLabel:N", sort=order),
             y=alt.Y("ASP:Q", title="ASP"),
@@ -961,7 +970,7 @@ def _render_sales_asp_combo_chart(summary_df: pd.DataFrame):
 
     asp_text = (
         alt.Chart(work)
-        .mark_text(dy=-10)
+        .mark_text(dy=-14)
         .encode(
             x=alt.X("PeriodLabel:N", sort=order),
             y=alt.Y("ASP:Q"),
@@ -972,8 +981,8 @@ def _render_sales_asp_combo_chart(summary_df: pd.DataFrame):
     chart = alt.layer(bars, sales_text, line, asp_text).resolve_scale(
         y="independent"
     ).properties(
-        height=430,
-        title="Sales and ASP by Selected Period"
+        height=480,
+        title="Sales and ASP by Selected Period",
     )
 
     st.altair_chart(chart, use_container_width=True)
@@ -1015,7 +1024,7 @@ def _render_sales_units_combo_chart(summary_df: pd.DataFrame):
 
     line = (
         alt.Chart(work)
-        .mark_line(point=True)
+        .mark_line(point=True, strokeWidth=2.5)
         .encode(
             x=alt.X("PeriodLabel:N", sort=order),
             y=alt.Y("Units:Q", title="Units"),
@@ -1028,7 +1037,7 @@ def _render_sales_units_combo_chart(summary_df: pd.DataFrame):
 
     units_text = (
         alt.Chart(work)
-        .mark_text(dy=-10)
+        .mark_text(dy=-14)
         .encode(
             x=alt.X("PeriodLabel:N", sort=order),
             y=alt.Y("Units:Q"),
@@ -1039,8 +1048,8 @@ def _render_sales_units_combo_chart(summary_df: pd.DataFrame):
     chart = alt.layer(bars, sales_text, line, units_text).resolve_scale(
         y="independent"
     ).properties(
-        height=430,
-        title="Sales and Units by Selected Period"
+        height=480,
+        title="Sales and Units by Selected Period",
     )
 
     st.altair_chart(chart, use_container_width=True)
@@ -1252,9 +1261,10 @@ def _render_quarterly_stacked_altair(df: pd.DataFrame, metric: str):
     )
 
     chart = (bars + text).properties(
-        height=430,
+        height=440,
         title=f"{metric} by Quarter, stacked within each selected year",
     )
+
     st.altair_chart(chart, use_container_width=True)
 
 
@@ -1479,9 +1489,9 @@ def _render_radar_altair(df: pd.DataFrame):
         )
     )
 
-    area = (
+    fill = (
         alt.Chart(df)
-        .mark_line(point=True)
+        .mark_area(opacity=0.18)
         .encode(
             theta=alt.Theta("AngleDeg:Q", scale=alt.Scale(domain=[0, 360])),
             radius=alt.Radius("ScaledSales:Q", scale=alt.Scale(domain=[0, 1.0], rangeMin=0, rangeMax=180)),
@@ -1493,9 +1503,9 @@ def _render_radar_altair(df: pd.DataFrame):
         )
     )
 
-    fill = (
+    line = (
         alt.Chart(df)
-        .mark_area(opacity=0.18)
+        .mark_line(point=True, strokeWidth=2.5)
         .encode(
             theta=alt.Theta("AngleDeg:Q", scale=alt.Scale(domain=[0, 360])),
             radius=alt.Radius("ScaledSales:Q", scale=alt.Scale(domain=[0, 1.0], rangeMin=0, rangeMax=180)),
@@ -1520,13 +1530,13 @@ def _render_radar_altair(df: pd.DataFrame):
     chart = alt.layer(
         ring_chart,
         fill,
-        area,
+        line,
         value_text,
         month_text,
         quarter_text,
     ).properties(
-        width=520,
-        height=520,
+        width=560,
+        height=560,
         title="All-Years Sales Seasonality Radar (Q1 → Q4, months inside each section)",
     )
 
@@ -1543,7 +1553,6 @@ def _make_pdf_radar_figure(df: pd.DataFrame):
 
     labels = df["Month"].tolist()
     values = df["ScaledSales"].tolist()
-    quarters = df["Quarter"].tolist()
 
     angles = [n / float(len(labels)) * 2 * math.pi for n in range(len(labels))]
     angles += angles[:1]
@@ -1648,16 +1657,12 @@ def build_visual_analytics_pdf_bytes(
 
     summary_df = _period_summary_df(df_vis)
 
-    story.append(Paragraph("Total Sales by Selected Period", styles["Heading2"]))
-    story.append(_fig_to_rl_image(_make_single_metric_bar_figure(summary_df, "Sales", "Total Sales by Selected Period", label_mode="money"), width_inches=9.8))
+    story.append(Paragraph("Sales and ASP by Selected Period", styles["Heading2"]))
+    story.append(_fig_to_rl_image(_make_sales_asp_combo_figure(summary_df, "Sales and ASP by Selected Period"), width_inches=9.8))
     story.append(Spacer(1, 10))
 
     story.append(Paragraph("Total Units by Selected Period", styles["Heading2"]))
     story.append(_fig_to_rl_image(_make_single_metric_bar_figure(summary_df, "Units", "Total Units by Selected Period", label_mode="int"), width_inches=9.8))
-    story.append(Spacer(1, 10))
-
-    story.append(Paragraph("Sales and ASP by Selected Period", styles["Heading2"]))
-    story.append(_fig_to_rl_image(_make_sales_asp_combo_figure(summary_df, "Sales and ASP by Selected Period"), width_inches=9.8))
     story.append(Spacer(1, 10))
 
     story.append(Paragraph("Sales and Units by Selected Period", styles["Heading2"]))
@@ -1780,14 +1785,8 @@ def render_visual_only(ctx: dict):
 
     summary_df = _period_summary_df(df_vis)
 
-    st.markdown("### Total Sales by Selected Period")
-    _render_sales_or_units_chart(
-        summary_df,
-        value_col="Sales",
-        title="Total Sales by Selected Period",
-        tooltip_title="Total Sales",
-        fmt=",.2f",
-    )
+    st.markdown("### Sales and ASP by Selected Period")
+    _render_sales_asp_combo_chart(summary_df)
 
     st.markdown("### Total Units by Selected Period")
     _render_sales_or_units_chart(
@@ -1797,9 +1796,6 @@ def render_visual_only(ctx: dict):
         tooltip_title="Total Units",
         fmt=",.0f",
     )
-
-    st.markdown("### Sales and ASP by Selected Period")
-    _render_sales_asp_combo_chart(summary_df)
 
     st.markdown("### Sales and Units by Selected Period")
     _render_sales_units_combo_chart(summary_df)
@@ -1813,8 +1809,8 @@ def render_visual_only(ctx: dict):
             title="Average Sales per SKU",
             tooltip_title="Average Sales per SKU",
             fmt=",.2f",
-            height=240,
-            width=240,
+            height=300,
+            width=280,
         )
 
     with c_avg_units:
@@ -1824,8 +1820,8 @@ def render_visual_only(ctx: dict):
             title="Average Units per SKU",
             tooltip_title="Average Units per SKU",
             fmt=",.2f",
-            height=240,
-            width=240,
+            height=300,
+            width=280,
         )
 
     if granularity == "Year":
