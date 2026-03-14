@@ -1655,26 +1655,11 @@ def _render_radar_altair(df: pd.DataFrame):
 
     work = df.copy()
     work["RadarValue"] = work["ScaledSalesOuter"] if "ScaledSalesOuter" in work.columns else work["ScaledSales"]
+    work["PointOrder"] = range(len(work))
 
     radius_scale = alt.Scale(domain=[0, 1.35], rangeMin=0, rangeMax=320)
 
     rings = pd.DataFrame({"r": [0.30, 0.60, 0.90, 1.20]})
-    spokes = pd.DataFrame(
-        {
-            "Month": work["Month"].tolist(),
-            "Deg": work["MidDeg"].tolist(),
-            "r0": [0.0] * len(work),
-            "r1": [1.20] * len(work),
-        }
-    )
-
-    quarter_labels = pd.DataFrame(
-        {
-            "Quarter": ["Q1", "Q2", "Q3", "Q4"],
-            "Deg": [45, 135, 225, 315],
-            "r": [1.30, 1.30, 1.30, 1.30],
-        }
-    )
 
     ring_chart = (
         alt.Chart(rings)
@@ -1685,13 +1670,36 @@ def _render_radar_altair(df: pd.DataFrame):
         )
     )
 
+    spoke_rows = []
+    for _, row in work.iterrows():
+        spoke_rows.append(
+            {
+                "Month": row["Month"],
+                "SpokeID": row["Month"],
+                "Deg": row["MidDeg"],
+                "Radius": 0.0,
+                "PointOrder": 0,
+            }
+        )
+        spoke_rows.append(
+            {
+                "Month": row["Month"],
+                "SpokeID": row["Month"],
+                "Deg": row["MidDeg"],
+                "Radius": 1.20,
+                "PointOrder": 1,
+            }
+        )
+    spokes = pd.DataFrame(spoke_rows)
+
     spoke_chart = (
         alt.Chart(spokes)
-        .mark_rule(stroke=RING_GRAY, strokeOpacity=0.55, strokeWidth=1.0)
+        .mark_line(stroke=RING_GRAY, strokeOpacity=0.55, strokeWidth=1.0)
         .encode(
             theta=alt.Theta("Deg:Q", scale=alt.Scale(domain=[0, 360])),
-            radius=alt.Radius("r0:Q", scale=radius_scale),
-            radius2=alt.Radius2("r1:Q", scale=radius_scale),
+            radius=alt.Radius("Radius:Q", scale=radius_scale),
+            detail="SpokeID:N",
+            order=alt.Order("PointOrder:Q", sort="ascending"),
         )
     )
 
@@ -1706,6 +1714,7 @@ def _render_radar_altair(df: pd.DataFrame):
         .encode(
             theta=alt.Theta("MidDeg:Q", scale=alt.Scale(domain=[0, 360])),
             radius=alt.Radius("RadarValue:Q", scale=radius_scale),
+            order=alt.Order("PointOrder:Q", sort="ascending"),
             tooltip=[
                 alt.Tooltip("Quarter:N", title="Quarter"),
                 alt.Tooltip("Month:N", title="Month"),
@@ -1714,7 +1723,7 @@ def _render_radar_altair(df: pd.DataFrame):
         )
     )
 
-    radar_area = (
+    radar_outline = (
         alt.Chart(work)
         .mark_line(
             interpolate="linear-closed",
@@ -1725,12 +1734,21 @@ def _render_radar_altair(df: pd.DataFrame):
         .encode(
             theta=alt.Theta("MidDeg:Q", scale=alt.Scale(domain=[0, 360])),
             radius=alt.Radius("RadarValue:Q", scale=radius_scale),
+            order=alt.Order("PointOrder:Q", sort="ascending"),
             tooltip=[
                 alt.Tooltip("Quarter:N", title="Quarter"),
                 alt.Tooltip("Month:N", title="Month"),
                 alt.Tooltip("TotalSales:Q", title="Sales", format=",.2f"),
             ],
         )
+    )
+
+    quarter_labels = pd.DataFrame(
+        {
+            "Quarter": ["Q1", "Q2", "Q3", "Q4"],
+            "Deg": [45, 135, 225, 315],
+            "r": [1.30, 1.30, 1.30, 1.30],
+        }
     )
 
     month_names = (
@@ -1767,7 +1785,7 @@ def _render_radar_altair(df: pd.DataFrame):
         ring_chart,
         spoke_chart,
         radar_fill,
-        radar_area,
+        radar_outline,
         value_labels,
         month_names,
         quarter_names,
