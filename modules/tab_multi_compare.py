@@ -29,7 +29,7 @@ from .shared_core import (
 
 LINE_ACCENT = "#FF4FC3"
 RADAR_FILL = "#4CC9F0"
-RADAR_LINE = "#00B4D8"
+RADAR_LINE = "#0077B6"
 TEXT_LIGHT = "#DCE6F2"
 TEXT_BLACK = "#111111"
 TEXT_AMBER = "#FFC857"
@@ -896,7 +896,6 @@ def _render_sales_asp_combo_chart(summary_df: pd.DataFrame):
     max_sales = float(work["Sales"].max()) if not work.empty else 0.0
     sales_domain_max = max(max_sales * 1.22, 1.0)
 
-    # Put ASP into a visual band above the bars
     band_low = sales_domain_max * 0.80
     band_high = sales_domain_max * 0.96
 
@@ -909,7 +908,7 @@ def _render_sales_asp_combo_chart(summary_df: pd.DataFrame):
 
     work["SalesLabel"] = work["Sales"].map(lambda v: money(float(v)))
     work["ASPLabel"] = work["ASP"].map(lambda v: money(float(v)))
-    work["ASPLabelY"] = work["ASPDisplayY"] + (sales_domain_max * 0.02)
+    work["ASPLabelY"] = work["ASPDisplayY"] + (sales_domain_max * 0.04)
     work["SalesLabelY"] = work["Sales"] * 0.90
 
     bars = (
@@ -928,7 +927,7 @@ def _render_sales_asp_combo_chart(summary_df: pd.DataFrame):
 
     sales_text = (
         alt.Chart(work)
-        .mark_text(color=TEXT_BLACK, fontWeight="bold", fontSize=14)
+        .mark_text(color=TEXT_BLACK, fontWeight="bold", fontSize=15)
         .encode(
             x=alt.X("PeriodLabel:N", sort=order),
             y=alt.Y("SalesLabelY:Q", scale=alt.Scale(domain=[0, sales_domain_max])),
@@ -991,7 +990,6 @@ def _render_sales_units_combo_chart(summary_df: pd.DataFrame):
     max_sales = float(work["Sales"].max()) if not work.empty else 0.0
     sales_domain_max = max(max_sales * 1.22, 1.0)
 
-    # Put Units into a visual band above the bars
     band_low = sales_domain_max * 0.80
     band_high = sales_domain_max * 0.96
 
@@ -1004,7 +1002,7 @@ def _render_sales_units_combo_chart(summary_df: pd.DataFrame):
 
     work["SalesLabel"] = work["Sales"].map(lambda v: money(float(v)))
     work["UnitsLabel"] = work["Units"].map(lambda v: f"{float(v):,.0f}")
-    work["UnitsLabelY"] = work["UnitsDisplayY"] + (sales_domain_max * 0.02)
+    work["UnitsLabelY"] = work["UnitsDisplayY"] + (sales_domain_max * 0.04)
     work["SalesLabelY"] = work["Sales"] * 0.90
 
     bars = (
@@ -1023,7 +1021,7 @@ def _render_sales_units_combo_chart(summary_df: pd.DataFrame):
 
     sales_text = (
         alt.Chart(work)
-        .mark_text(color=TEXT_BLACK, fontWeight="bold", fontSize=14)
+        .mark_text(color=TEXT_BLACK, fontWeight="bold", fontSize=15)
         .encode(
             x=alt.X("PeriodLabel:N", sort=order),
             y=alt.Y("SalesLabelY:Q", scale=alt.Scale(domain=[0, sales_domain_max])),
@@ -1153,7 +1151,7 @@ def _make_sales_asp_combo_figure(summary_df: pd.DataFrame, title: str = "Sales a
             continue
         ax1.text(
             rect.get_x() + rect.get_width() / 2,
-            rect.get_height() * 0.92,
+            rect.get_height() * 0.90,
             money(float(val)),
             ha="center",
             va="top",
@@ -1167,7 +1165,7 @@ def _make_sales_asp_combo_figure(summary_df: pd.DataFrame, title: str = "Sales a
     ax2.set_ylabel("ASP")
 
     for xi, val in zip(x, asp):
-        ax2.text(xi, val, money(float(val)), ha="center", va="bottom", fontsize=9, color=LINE_ACCENT, fontweight="bold")
+        ax2.text(xi, val * 1.04 if val != 0 else val + 0.05, money(float(val)), ha="center", va="bottom", fontsize=9, color=LINE_ACCENT, fontweight="bold")
 
     handles1, labels1 = ax1.get_legend_handles_labels()
     handles2, labels2 = ax2.get_legend_handles_labels()
@@ -1202,7 +1200,7 @@ def _make_sales_units_combo_figure(summary_df: pd.DataFrame, title: str = "Sales
             continue
         ax1.text(
             rect.get_x() + rect.get_width() / 2,
-            rect.get_height() * 0.92,
+            rect.get_height() * 0.90,
             money(float(val)),
             ha="center",
             va="top",
@@ -1216,7 +1214,7 @@ def _make_sales_units_combo_figure(summary_df: pd.DataFrame, title: str = "Sales
     ax2.set_ylabel("Units")
 
     for xi, val in zip(x, units):
-        ax2.text(xi, val, f"{float(val):,.0f}", ha="center", va="bottom", fontsize=9, color=LINE_ACCENT, fontweight="bold")
+        ax2.text(xi, val * 1.04 if val != 0 else val + 0.05, f"{float(val):,.0f}", ha="center", va="bottom", fontsize=9, color=LINE_ACCENT, fontweight="bold")
 
     handles1, labels1 = ax1.get_legend_handles_labels()
     handles2, labels2 = ax2.get_legend_handles_labels()
@@ -1228,7 +1226,7 @@ def _make_sales_units_combo_figure(summary_df: pd.DataFrame, title: str = "Sales
 
 def _quarterly_stacked_df(df: pd.DataFrame, metric: str) -> pd.DataFrame:
     if df.empty or metric not in df.columns or "Quarter" not in df.columns:
-        return pd.DataFrame(columns=["PeriodLabel", "Quarter", "Value", "ValueLabel", "PeriodOrder"])
+        return pd.DataFrame(columns=["PeriodLabel", "Quarter", "Value", "ValueLabel", "PeriodOrder", "Start", "LabelY"])
 
     out = (
         df.dropna(subset=["Quarter"])
@@ -1247,6 +1245,10 @@ def _quarterly_stacked_df(df: pd.DataFrame, metric: str) -> pd.DataFrame:
         out["ValueLabel"] = out["Value"].map(lambda v: money(float(v)))
     else:
         out["ValueLabel"] = out["Value"].map(lambda v: f"{float(v):,.0f}")
+
+    out["Start"] = out.groupby("PeriodLabel")["Value"].cumsum() - out["Value"]
+    out["LabelY"] = out["Start"] + (out["Value"] * 0.18)
+
     return out
 
 
@@ -1275,10 +1277,10 @@ def _render_quarterly_stacked_altair(df: pd.DataFrame, metric: str):
 
     text = (
         alt.Chart(df)
-        .mark_text(size=10, color=TEXT_AMBER, fontWeight="bold")
+        .mark_text(size=10, color=TEXT_BLACK, fontWeight="bold")
         .encode(
             x=alt.X("PeriodLabel:N", sort=order),
-            y=alt.Y("Value:Q", stack="center"),
+            y=alt.Y("LabelY:Q", title=metric, stack=None),
             detail="Quarter:N",
             text="ValueLabel:N",
         )
@@ -1331,11 +1333,12 @@ def _make_quarterly_stacked_figure(df: pd.DataFrame, metric: str):
             label = money(float(v)) if metric == "Sales" else f"{float(v):,.0f}"
             ax.text(
                 rect.get_x() + rect.get_width() / 2,
-                b + (v / 2),
+                b + (v * 0.18),
                 label,
                 ha="center",
-                va="center",
+                va="bottom",
                 fontsize=8,
+                color="black",
             )
 
         bottom += vals
@@ -1459,13 +1462,19 @@ def _all_years_radar_month_df(df_hist: pd.DataFrame) -> pd.DataFrame:
 
     order_df = pd.DataFrame(RADAR_MONTH_ORDER, columns=["Quarter", "Month", "MonthNum"])
     out = order_df.merge(out, on="MonthNum", how="left").fillna({"TotalSales": 0.0})
+
     max_sales = float(out["TotalSales"].max()) if not out.empty else 0.0
     out["ScaledSales"] = out["TotalSales"] / max_sales if max_sales > 0 else 0.0
-    out["Label"] = out["Month"]
-    out["Rank"] = out["TotalSales"].rank(method="dense", ascending=False).astype(int)
-    out["AngleDeg"] = (out["MonthNum"] - 1) * 30
-    out["QuarterOrder"] = out["Quarter"].map({"Q1": 1, "Q2": 2, "Q3": 3, "Q4": 4})
+
+    out["StartDeg"] = (out["MonthNum"] - 1) * 30
+    out["EndDeg"] = out["MonthNum"] * 30
+    out["MidDeg"] = out["StartDeg"] + 15
+    out["OuterLabelR"] = 1.08
+    out["QuarterLabelR"] = 1.22
+    out["ValueLabelR"] = np.minimum(out["ScaledSales"] + 0.05, 1.0)
+
     out["SalesLabel"] = out["TotalSales"].map(lambda v: money(float(v)))
+
     return out
 
 
@@ -1474,99 +1483,94 @@ def _render_radar_altair(df: pd.DataFrame):
         st.info("No radar data available.")
         return
 
+    quarter_slices = pd.DataFrame(
+        {
+            "Quarter": ["Q1", "Q2", "Q3", "Q4"],
+            "StartDeg": [0, 90, 180, 270],
+            "EndDeg": [90, 180, 270, 360],
+            "QuarterMidDeg": [45, 135, 225, 315],
+            "RadiusFull": [1.0, 1.0, 1.0, 1.0],
+            "QuarterLabelR": [1.20, 1.20, 1.20, 1.20],
+        }
+    )
+
     rings = pd.DataFrame({"r": [0.25, 0.50, 0.75, 1.00]})
 
     ring_chart = (
         alt.Chart(rings)
-        .mark_arc(fillOpacity=0, strokeOpacity=0.55, stroke=RING_GRAY)
+        .mark_arc(fillOpacity=0, stroke=RING_GRAY, strokeOpacity=0.65, strokeWidth=1.2)
         .encode(
             theta=alt.Theta(value=360),
-            radius=alt.Radius("r:Q", scale=alt.Scale(domain=[0, 1.0], rangeMin=0, rangeMax=180)),
+            radius=alt.Radius("r:Q", scale=alt.Scale(domain=[0, 1.0], rangeMin=0, rangeMax=200)),
         )
     )
 
-    quarter_labels = pd.DataFrame(
-        {
-            "Quarter": ["Q1", "Q2", "Q3", "Q4"],
-            "AngleDeg": [45, 135, 225, 315],
-            "Radius": [1.10, 1.10, 1.10, 1.10],
-        }
+    quarter_outline = (
+        alt.Chart(quarter_slices)
+        .mark_arc(fillOpacity=0, stroke=RING_GRAY, strokeOpacity=0.9, strokeWidth=1.6)
+        .encode(
+            theta=alt.Theta("StartDeg:Q", scale=alt.Scale(domain=[0, 360])),
+            theta2="EndDeg:Q",
+            radius=alt.Radius("RadiusFull:Q", scale=alt.Scale(domain=[0, 1.25], rangeMin=0, rangeMax=200)),
+        )
     )
 
-    quarter_text = (
-        alt.Chart(quarter_labels)
+    month_wedges = (
+        alt.Chart(df)
+        .mark_arc(stroke=RADAR_LINE, strokeWidth=1.0, color=RADAR_FILL, opacity=0.70)
+        .encode(
+            theta=alt.Theta("StartDeg:Q", scale=alt.Scale(domain=[0, 360])),
+            theta2="EndDeg:Q",
+            radius=alt.Radius("ScaledSales:Q", scale=alt.Scale(domain=[0, 1.0], rangeMin=0, rangeMax=200)),
+            tooltip=[
+                alt.Tooltip("Quarter:N", title="Quarter"),
+                alt.Tooltip("Month:N", title="Month"),
+                alt.Tooltip("TotalSales:Q", title="Sales", format=",.2f"),
+            ],
+        )
+    )
+
+    month_names = (
+        alt.Chart(df)
+        .mark_text(fontSize=9, color=TEXT_TEAL)
+        .encode(
+            theta=alt.Theta("MidDeg:Q", scale=alt.Scale(domain=[0, 360])),
+            radius=alt.Radius("OuterLabelR:Q", scale=alt.Scale(domain=[0, 1.25], rangeMin=0, rangeMax=200)),
+            text="Month:N",
+        )
+    )
+
+    quarter_names = (
+        alt.Chart(quarter_slices)
         .mark_text(fontSize=12, fontWeight="bold", color=TEXT_AMBER)
         .encode(
-            theta=alt.Theta("AngleDeg:Q", scale=alt.Scale(domain=[0, 360])),
-            radius=alt.Radius("Radius:Q", scale=alt.Scale(domain=[0, 1.2], rangeMin=0, rangeMax=200)),
+            theta=alt.Theta("QuarterMidDeg:Q", scale=alt.Scale(domain=[0, 360])),
+            radius=alt.Radius("QuarterLabelR:Q", scale=alt.Scale(domain=[0, 1.25], rangeMin=0, rangeMax=200)),
             text="Quarter:N",
         )
     )
 
-    month_text = (
+    value_labels = (
         alt.Chart(df)
-        .mark_text(fontSize=9, color=TEXT_TEAL)
+        .mark_text(fontSize=8, color=TEXT_BLACK, fontWeight="bold")
         .encode(
-            theta=alt.Theta("AngleDeg:Q", scale=alt.Scale(domain=[0, 360])),
-            radius=alt.Radius(value=198),
-            text="Month:N",
-            tooltip=[
-                alt.Tooltip("Quarter:N", title="Quarter"),
-                alt.Tooltip("Month:N", title="Month"),
-                alt.Tooltip("TotalSales:Q", title="Sales", format=",.2f"),
-            ],
-        )
-    )
-
-    fill = (
-        alt.Chart(df)
-        .mark_area(opacity=0.28, color=RADAR_FILL)
-        .encode(
-            theta=alt.Theta("AngleDeg:Q", scale=alt.Scale(domain=[0, 360])),
-            radius=alt.Radius("ScaledSales:Q", scale=alt.Scale(domain=[0, 1.0], rangeMin=0, rangeMax=180)),
-            tooltip=[
-                alt.Tooltip("Quarter:N", title="Quarter"),
-                alt.Tooltip("Month:N", title="Month"),
-                alt.Tooltip("TotalSales:Q", title="Sales", format=",.2f"),
-            ],
-        )
-    )
-
-    line = (
-        alt.Chart(df)
-        .mark_line(point=alt.OverlayMarkDef(color=RADAR_LINE, filled=True, size=70), strokeWidth=2.8, color=RADAR_LINE)
-        .encode(
-            theta=alt.Theta("AngleDeg:Q", scale=alt.Scale(domain=[0, 360])),
-            radius=alt.Radius("ScaledSales:Q", scale=alt.Scale(domain=[0, 1.0], rangeMin=0, rangeMax=180)),
-            tooltip=[
-                alt.Tooltip("Quarter:N", title="Quarter"),
-                alt.Tooltip("Month:N", title="Month"),
-                alt.Tooltip("TotalSales:Q", title="Sales", format=",.2f"),
-            ],
-        )
-    )
-
-    value_text = (
-        alt.Chart(df)
-        .mark_text(fontSize=8, dy=-8, color=TEXT_BLACK, fontWeight="bold")
-        .encode(
-            theta=alt.Theta("AngleDeg:Q", scale=alt.Scale(domain=[0, 360])),
-            radius=alt.Radius("ScaledSales:Q", scale=alt.Scale(domain=[0, 1.0], rangeMin=0, rangeMax=180)),
+            theta=alt.Theta("MidDeg:Q", scale=alt.Scale(domain=[0, 360])),
+            radius=alt.Radius("ValueLabelR:Q", scale=alt.Scale(domain=[0, 1.25], rangeMin=0, rangeMax=200)),
             text="SalesLabel:N",
         )
     )
 
     chart = alt.layer(
         ring_chart,
-        fill,
-        line,
-        value_text,
-        month_text,
-        quarter_text,
+        quarter_outline,
+        month_wedges,
+        value_labels,
+        month_names,
+        quarter_names,
     ).properties(
-        width=560,
-        height=560,
-        title="All-Years Sales Seasonality Radar (Q1 → Q4, months inside each section)",
+        width=600,
+        height=600,
+        title="All-Years Sales Seasonality Radar (January at top, clockwise)",
     ).configure_title(
         anchor="start",
         fontSize=16,
@@ -1604,7 +1608,7 @@ def _make_pdf_radar_figure(df: pd.DataFrame):
     ax.set_ylim(0, 1.0)
 
     ax.plot(angles, values, linewidth=2, color=RADAR_LINE)
-    ax.fill(angles, values, alpha=0.28, color=RADAR_FILL)
+    ax.fill(angles, values, alpha=0.35, color=RADAR_FILL)
 
     quarter_midpoints = [1, 4, 7, 10]
     quarter_names = ["Q1", "Q2", "Q3", "Q4"]
@@ -1612,7 +1616,7 @@ def _make_pdf_radar_figure(df: pd.DataFrame):
         angle = angles[idx]
         ax.text(angle, 1.12, qn, ha="center", va="center", fontsize=11, fontweight="bold")
 
-    ax.set_title("All-Years Sales Seasonality Radar (Q1 → Q4, months inside each section)", pad=24, fontsize=14, fontweight="bold")
+    ax.set_title("All-Years Sales Seasonality Radar (January at top, clockwise)", pad=24, fontsize=14, fontweight="bold")
     return fig
 
 
